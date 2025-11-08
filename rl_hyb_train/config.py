@@ -1,8 +1,16 @@
 """Configuration loading and validation."""
-import yaml
+from __future__ import annotations
+
+from dataclasses import dataclass, field
 from pathlib import Path
-from dataclasses import dataclass
-from typing import List, Optional, Dict
+from typing import Dict, List, Optional, Any
+
+import yaml
+
+
+# ---------------------------------------------------------------------------
+# Atomic config sections
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -19,8 +27,8 @@ class DriverConfig:
     p_req_rate_limit_kw_per_s: float = 400.0
     p_loss_watts: float = 200000.0
     manual_loop: bool = False
-    manual_p_req_profile: Optional[List[Dict[str, float]]] = None
-    manual_speed_profile: Optional[List[Dict[str, float]]] = None
+    manual_p_req_profile: List[Dict[str, float]] = field(default_factory=list)
+    manual_speed_profile: List[Dict[str, float]] = field(default_factory=list)
     speed_target_smoothing_tau_s: float = 8.0
     speed_tracking_tau_s: float = 12.0
     speed_tracking_accel_limit_mps2: float = 0.5
@@ -35,12 +43,21 @@ class DriverConfig:
     speed_pid_kd: float = 0.08
     speed_pid_integral_limit: float = 1.5
     speed_pid_derivative_filter_tau_s: float = 0.6
-
-    def __post_init__(self):
-        if self.manual_p_req_profile is None:
-            self.manual_p_req_profile = []
-        if self.manual_speed_profile is None:
-            self.manual_speed_profile = []
+    # Trajectory filtering + preview planner knobs
+    speed_profile_dt_seconds: float = 1.0
+    speed_profile_filter_enable: bool = True
+    speed_profile_filter_tau_s: float = 6.0
+    speed_preview_horizon_s: float = 12.0
+    speed_planner_enable: bool = True
+    speed_planner_horizon_s: float = 10.0
+    speed_planner_min_horizon_s: float = 4.0
+    speed_planner_penalty_accel: float = 0.05
+    speed_planner_penalty_jerk: float = 0.05
+    # Smoothing and robustness additions for speed controller
+    speed_error_deadband_mps: float = 0.15
+    speed_integral_separation_mps: float = 0.6
+    speed_disable_integral_when_saturated: bool = True
+    speed_measurement_filter_tau_s: float = 4.0
 
 
 @dataclass
@@ -71,7 +88,7 @@ class FuelCellConfig:
     tank_capacity_kg: float = 50.0
     tank_init_min: float = 0.70
     tank_init_max: float = 1.00
-    tank_hard_min: float = 0.02  # Minimum tank level for termination
+    tank_hard_min: float = 0.02
     ramp_kw_per_s: float = 40.0
 
 
@@ -113,76 +130,207 @@ class ObservationsConfig:
     include_last_action: bool = True
     include_noise_channels: int = 3
     normalize_to_unit_box: bool = True
-    p_req_max_kw: float = 2000.0  # Max P_req for normalization
-    soc_noise_std: float = 0.02  # SOC observation noise std
-    tank_noise_std: float = 0.02  # Tank observation noise std
-    nuisance_noise_std: float = 0.1  # Nuisance noise channels std
+    p_req_max_kw: float = 2000.0
+    soc_noise_std: float = 0.02
+    tank_noise_std: float = 0.02
+    nuisance_noise_std: float = 0.1
 
 
 @dataclass
 class RendererConfig:
     enabled: bool = True
-    mode: str = "human"  # human | rgb_array | ansi
-    render_every: int = 5  # steps
-    rolling_window_s: int = 180  # seconds
+    mode: str = "human"
+    render_every: int = 5
+    rolling_window_s: int = 180
     dpi: int = 110
-    figsize: List[float] = None
+    figsize: List[float] = field(default_factory=lambda: [12.0, 7.0])
     show_hidden_debug: bool = False
     draw_schedule: bool = True
     write_video: bool = False
     video_path: str = "runs/env0_episode.mp4"
-    write_png_every: int = 0  # 0 = disabled, else step interval
-    interactive: bool = False  # Enable interactive slider for time scrubbing
-    colors: dict = None
+    write_png_every: int = 0
+    interactive: bool = False
+    colors: Dict[str, str] = field(
+        default_factory=lambda: {
+            "demand": "#000000",
+            "fc": "#1f77b4",
+            "batt_dis": "#ff7f0e",
+            "batt_chg": "#2ca02c",
+            "unmet": "#d62728",
+            "soc_band": "#e5e5e5",
+        }
+    )
 
-    def __post_init__(self):
-        if self.figsize is None:
-            self.figsize = [12.0, 7.0]
-        if self.colors is None:
-            self.colors = {
-                "demand": "#000000",
-                "fc": "#1f77b4",
-                "batt_dis": "#ff7f0e",
-                "batt_chg": "#2ca02c",
-                "unmet": "#d62728",
-                "soc_band": "#e5e5e5",
-            }
+
+@dataclass
+class LoggingConfig:
+    log_terms: List[str] = field(default_factory=list)
+    trace_signals: List[str] = field(default_factory=list)
+    kpi_aggregates: List[str] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Bundled modalities
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TrainModelConfig:
+    """Parameters that define the physical train model."""
+
+    plant: PlantConfig = field(default_factory=PlantConfig)
+    battery: BatteryConfig = field(default_factory=BatteryConfig)
+    fuel_cell: FuelCellConfig = field(default_factory=FuelCellConfig)
+    shield: ShieldConfig = field(default_factory=ShieldConfig)
+    costs: CostsConfig = field(default_factory=CostsConfig)
+
+
+@dataclass
+class ScenarioConfig:
+    """Scenario definition: track, schedule, observation model."""
+
+    sim: SimConfig = field(default_factory=SimConfig)
+    driver: DriverConfig = field(default_factory=DriverConfig)
+    reward_weights: RewardWeightsConfig = field(default_factory=RewardWeightsConfig)
+    randomization: RandomizationConfig = field(default_factory=RandomizationConfig)
+    observations: ObservationsConfig = field(default_factory=ObservationsConfig)
+    renderer: RendererConfig = field(default_factory=RendererConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
+
+
+@dataclass
+class PolicyConfig:
+    """Policy selection and tuning knobs."""
+
+    default: str = "baseline"
+    baseline: Dict[str, Any] = field(default_factory=dict)
+    balanced: Dict[str, Any] = field(default_factory=dict)
+    scenario: Dict[str, Any] = field(default_factory=dict)
+    mpc: Dict[str, Any] = field(default_factory=dict)
+    rl: Dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Root config with backward-compatible accessors
+# ---------------------------------------------------------------------------
 
 
 @dataclass
 class Config:
-    sim: SimConfig
-    driver: DriverConfig
-    plant: PlantConfig
-    battery: BatteryConfig
-    fuel_cell: FuelCellConfig
-    shield: ShieldConfig
-    costs: CostsConfig
-    reward_weights: RewardWeightsConfig
-    randomization: RandomizationConfig
-    observations: ObservationsConfig
-    renderer: RendererConfig = None
+    train: TrainModelConfig = field(default_factory=TrainModelConfig)
+    scenario: ScenarioConfig = field(default_factory=ScenarioConfig)
+    policy: PolicyConfig = field(default_factory=PolicyConfig)
 
-    def __post_init__(self):
-        if self.renderer is None:
-            self.renderer = RendererConfig()
+    # Backwards-compatible attribute accessors --------------------------------
+    @property
+    def sim(self) -> SimConfig:
+        return self.scenario.sim
+
+    @property
+    def driver(self) -> DriverConfig:
+        return self.scenario.driver
+
+    @property
+    def plant(self) -> PlantConfig:
+        return self.train.plant
+
+    @property
+    def battery(self) -> BatteryConfig:
+        return self.train.battery
+
+    @property
+    def fuel_cell(self) -> FuelCellConfig:
+        return self.train.fuel_cell
+
+    @property
+    def shield(self) -> ShieldConfig:
+        return self.train.shield
+
+    @property
+    def costs(self) -> CostsConfig:
+        return self.train.costs
+
+    @property
+    def reward_weights(self) -> RewardWeightsConfig:
+        return self.scenario.reward_weights
+
+    @property
+    def randomization(self) -> RandomizationConfig:
+        return self.scenario.randomization
+
+    @property
+    def observations(self) -> ObservationsConfig:
+        return self.scenario.observations
+
+    @property
+    def renderer(self) -> RendererConfig:
+        return self.scenario.renderer
+
+    # ------------------------------------------------------------------
 
     @classmethod
-    def from_yaml(cls, path: str) -> "Config":
-        """Load configuration from YAML file."""
-        with open(path, "r") as f:
-            data = yaml.safe_load(f)
-        
-        return cls(
-            sim=SimConfig(**data.get("sim", {})),
-            driver=DriverConfig(**data.get("driver", {})),
+    def from_yaml(cls, path: str | Path) -> "Config":
+        """Load configuration from YAML file (supports legacy layout)."""
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+
+        train = cls._parse_train(data)
+        scenario = cls._parse_scenario(data)
+        policy = cls._parse_policy(data.get("policy", {}))
+        return cls(train=train, scenario=scenario, policy=policy)
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _parse_train(data: Dict[str, Any]) -> TrainModelConfig:
+        train_data = data.get("train")
+        if train_data:
+            return TrainModelConfig(
+                plant=PlantConfig(**train_data.get("plant", {})),
+                battery=BatteryConfig(**train_data.get("battery", {})),
+                fuel_cell=FuelCellConfig(**train_data.get("fuel_cell", {})),
+                shield=ShieldConfig(**train_data.get("shield", {})),
+                costs=CostsConfig(**train_data.get("costs", {})),
+            )
+        # Legacy top-level fields
+        return TrainModelConfig(
             plant=PlantConfig(**data.get("plant", {})),
             battery=BatteryConfig(**data.get("battery", {})),
             fuel_cell=FuelCellConfig(**data.get("fuel_cell", {})),
             shield=ShieldConfig(**data.get("shield", {})),
             costs=CostsConfig(**data.get("costs", {})),
+        )
+
+    @staticmethod
+    def _parse_scenario(data: Dict[str, Any]) -> ScenarioConfig:
+        scenario_data = data.get("scenario")
+        if scenario_data:
+            return ScenarioConfig(
+                sim=SimConfig(**scenario_data.get("sim", {})),
+                driver=DriverConfig(**scenario_data.get("driver", {})),
+                reward_weights=RewardWeightsConfig(**scenario_data.get("reward_weights", {})),
+                randomization=RandomizationConfig(**scenario_data.get("randomization", {})),
+                observations=ObservationsConfig(**scenario_data.get("observations", {})),
+                renderer=RendererConfig(**scenario_data.get("renderer", {})),
+                logging=LoggingConfig(**scenario_data.get("logging", {})),
+            )
+        # Legacy top-level fields
+        return ScenarioConfig(
+            sim=SimConfig(**data.get("sim", {})),
+            driver=DriverConfig(**data.get("driver", {})),
             reward_weights=RewardWeightsConfig(**data.get("reward_weights", {})),
             randomization=RandomizationConfig(**data.get("randomization", {})),
             observations=ObservationsConfig(**data.get("observations", {})),
             renderer=RendererConfig(**data.get("renderer", {})),
+            logging=LoggingConfig(**data.get("logging", {})),
+        )
+
+    @staticmethod
+    def _parse_policy(policy_data: Dict[str, Any]) -> PolicyConfig:
+        return PolicyConfig(
+            default=policy_data.get("default", "baseline"),
+            baseline=policy_data.get("baseline", {}),
+            balanced=policy_data.get("balanced", {}),
+            scenario=policy_data.get("scenario", {}),
+            mpc=policy_data.get("mpc", {}),
+            rl=policy_data.get("rl", {}),
         )

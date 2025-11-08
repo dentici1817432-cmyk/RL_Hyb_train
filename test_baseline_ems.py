@@ -7,11 +7,20 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from rl_hyb_train import Config
-from rl_hyb_train.baseline_ems import BaselineEMS
 from rl_hyb_train.env0_env import Env0
-from rl_hyb_train.scenario_ems import ScenarioAwareEMS
-from rl_hyb_train.rl_ems import RLEMS
-from rl_hyb_train.mpc_ems import MPCEms
+from rl_hyb_train.policies import (
+    BaselineEMS,
+    BalancedEMS,
+    BalancedEMSConfig,
+    ScenarioAwareEMS,
+    ScenarioEMSConfig,
+    RLEMS,
+    MPCEms,
+    MPCConfig,
+    OfflineOptimalEMS,
+)
+from rl_hyb_train.powerflow import compute_power_balance
+from rl_hyb_train.speed_profile import generate_feasible_profile, Cruise
 
 
 # ---------------------------------------------------------------------------
@@ -401,17 +410,42 @@ def estimate_speed_profile_power_bounds(config: Config) -> Dict[str, float]:
     return {"max_pull_kw": max_pull, "max_regen_kw": max_regen}
 
 
-def build_ems(policy: str, config: Config, profile: List[Dict[str, float]], rl_model: Optional[Path] = None):
+def build_ems(
+    policy: str,
+    config: Config,
+    profile: List[Dict[str, float]],
+    rl_model: Optional[Path],
+) -> Any:
+    policy_cfg = config.policy
+
     if policy == "baseline":
         return BaselineEMS(config)
+
+    if policy == "balanced":
+        tuning = BalancedEMSConfig(**policy_cfg.balanced) if policy_cfg.balanced else None
+        return BalancedEMS(config, tuning=tuning)
+
     if policy == "scenario":
-        return ScenarioAwareEMS(config, profile)
+        scenario_tuning = (
+            ScenarioEMSConfig(**policy_cfg.scenario) if policy_cfg.scenario else None
+        )
+        return ScenarioAwareEMS(config, profile, tuning=scenario_tuning)
+
     if policy == "rl":
         if rl_model is None:
             raise ValueError("--rl-model must be provided when policy=rl")
         return RLEMS(rl_model)
+
     if policy == "mpc":
-        return MPCEms(config)
+        mpc_tuning = MPCConfig(**policy_cfg.mpc) if policy_cfg.mpc else None
+        return MPCEms(config, tuning=mpc_tuning)
+
+    if policy == "offline_opt":
+        # Expand the provided scenario profile into a per-step P_req vector.
+        dt = float(config.scenario.sim.dt_seconds)
+        p_req_series = _expand_preq_profile_vector(profile, dt)
+        return OfflineOptimalEMS(config, p_req_series)
+
     raise ValueError(f"Unknown policy {policy}")
 
 
@@ -427,9 +461,12 @@ def run_policy_episode(
     live_render: bool,
     final_render: bool,
     seed: int = 42,
+    rl_model: Optional[Path] = None,
+    auto_speed: bool = False,
 ) -> Dict[str, float]:
     config = Config.from_yaml(config_path)
     power_stats: Optional[Dict[str, float]] = None
+    resolved_policy = config.policy.default if policy == "auto" else policy
 
     if driver_mode == "scenario_profile":
         config.driver.manual_p_req_profile = profile
@@ -437,6 +474,29 @@ def run_policy_episode(
         config.driver.manual_loop = False
         summarize_profile(profile_name, profile)
     elif driver_mode == "config_speed":
+        # Optionally synthesize a feasible speed profile
+        if auto_speed:
+            auto_profile = generate_feasible_profile(
+                config,
+                dwells=[{"duration_s": 120, "label": "Station A dwell"}],
+                cruises=[
+                    Cruise(speed_mps=12.0, duration_s=900, label="Leg A1"),
+                    Cruise(speed_mps=18.0, duration_s=900, label="Leg A2"),
+                    Cruise(speed_mps=22.0, duration_s=1200, label="Suburban"),
+                    Cruise(speed_mps=16.0, duration_s=720, label="Approach"),
+                    Cruise(speed_mps=0.0, duration_s=180, label="Station B dwell"),
+                    Cruise(speed_mps=12.0, duration_s=720, label="Leg B1"),
+                    Cruise(speed_mps=18.0, duration_s=900, label="Leg B2"),
+                    Cruise(speed_mps=24.0, duration_s=1200, label="Express"),
+                    Cruise(speed_mps=0.0, duration_s=180, label="Terminal dwell"),
+                ],
+                start_speed_mps=0.0,
+                ramp_margin_kw=60.0,
+                min_ramp_time_s=90,
+            )
+            config.driver.manual_speed_profile = auto_profile
+            config.driver.manual_p_req_profile = []
+            config.driver.manual_loop = False
         summarize_speed_profile(profile_name, config.driver.manual_speed_profile)
         power_stats = estimate_speed_profile_power_bounds(config)
         config.driver.manual_loop = False
@@ -447,12 +507,12 @@ def run_policy_episode(
     config.renderer.enabled = True
 
     env = Env0(config, seed=seed)
-    ems = build_ems(policy, config, profile, rl_model=args.rl_model if 'args' in locals() else None)
+    ems = build_ems(resolved_policy, config, profile, rl_model=rl_model)
     if hasattr(ems, "reset"):
         ems.reset()
 
     print(f"Loaded config from {config_path}")
-    print(f"Policy: {policy}")
+    print(f"Policy: {resolved_policy}")
     print(f"FC max power: {config.fuel_cell.p_fc_max_kw} kW")
     print(f"Battery max discharge: {config.battery.p_batt_max_discharge_kw} kW")
     print(f"Battery max charge: {config.battery.p_batt_max_charge_kw} kW\n")
@@ -474,6 +534,7 @@ def run_policy_episode(
         "max_regen": 0.0,
         "regen_charge_kwh": 0.0,
         "fc_charge_kwh": 0.0,
+        "max_balance_error_kw": 0.0,
     }
     step_count = 0
 
@@ -515,6 +576,16 @@ def run_policy_episode(
             totals["max_unmet"] = max(totals["max_unmet"], unmet)
 
             p_req = info.get("p_req_kw", 0.0)
+            if "p_aux_kw" in info:
+                balance = compute_power_balance(
+                    p_req_kw=p_req,
+                    p_aux_kw=info["p_aux_kw"],
+                    p_fc_kw=info.get("p_fc_kw", 0.0),
+                    p_batt_delivered_kw=info.get("p_batt_delivered_kw", max(info.get("p_batt_kw", 0.0), 0.0)),
+                )
+                diff = abs(balance.p_unmet_kw - info.get("p_unmet_kw", 0.0))
+                totals["max_balance_error_kw"] = max(totals["max_balance_error_kw"], diff)
+
             if p_req < 0.0:
                 totals["regen_steps"] += 1
                 totals["regen_power"] += abs(p_req)
@@ -582,6 +653,8 @@ def run_policy_episode(
         print(f"Max regen power: {totals['max_regen']:.2f} kW")
     print(f"  Battery charge from regen: {totals['regen_charge_kwh']:.2f} kWh")
     print(f"  Battery charge from FC: {totals['fc_charge_kwh']:.2f} kWh")
+    print("\nDiagnostics:")
+    print(f"Max DC-bus mismatch: {totals['max_balance_error_kw']:.3e} kW")
 
     if distance > 0:
         cost_per_km = (totals["cost_h2"] + totals["cost_grid"]) / distance
@@ -605,6 +678,7 @@ def run_policy_episode(
         "constraint_violations": info.get("constraint_violations", 0),
         "final_soc": info["soc"],
         "final_tank": info["tank_level"],
+        "policy_used": resolved_policy,
     }
 
 
@@ -619,9 +693,9 @@ def test_baseline_ems() -> Dict[str, Dict[str, Dict[str, float]]]:
     )
     parser.add_argument(
         "--policy",
-        choices=["baseline", "scenario", "mpc", "rl", "both"],
+        choices=["auto", "baseline", "balanced", "scenario", "mpc", "rl", "both"],
         default="scenario",
-        help="Which EMS policy to run",
+        help="Which EMS policy to run ('auto' uses config.policy.default)",
     )
     parser.add_argument("--rl-model", type=Path, default=None, help="Path to a trained SB3 model (when policy=rl)")
     parser.add_argument("--render", action="store_true", help="Enable live rendering (slower)")
@@ -629,6 +703,7 @@ def test_baseline_ems() -> Dict[str, Dict[str, Dict[str, float]]]:
     parser.add_argument("--stats-interval", type=int, default=50, help="Print stats every N steps")
     parser.add_argument("--skip-final-render", action="store_true", help="Skip saving the final frame")
     parser.add_argument("--seed", type=int, default=42, help="Environment seed")
+    parser.add_argument("--auto-speed", action="store_true", help="Generate a feasible speed profile and use it (driver_mode=config_speed)")
     parser.add_argument(
         "--driver-mode",
         choices=["scenario_profile", "config_speed"],
@@ -658,6 +733,8 @@ def test_baseline_ems() -> Dict[str, Dict[str, Dict[str, float]]]:
                 live_render=args.render,
                 final_render=not args.skip_final_render,
                 seed=args.seed,
+                rl_model=args.rl_model,
+                auto_speed=args.auto_speed,
             )
 
     print("\n" + "#" * 86)
@@ -669,6 +746,7 @@ def test_baseline_ems() -> Dict[str, Dict[str, Dict[str, float]]]:
     for scenario_name in selected_scenarios:
         for policy in policies:
             metrics = aggregated[scenario_name][policy]
+            policy_label = metrics.get("policy_used", policy)
             distance = metrics["distance_km"]
             if distance > 0:
                 cost_per_km = (metrics["total_cost_h2"] + metrics["total_cost_grid"]) / distance
@@ -676,7 +754,7 @@ def test_baseline_ems() -> Dict[str, Dict[str, Dict[str, float]]]:
                 cost_per_km = 0.0
             print(
                 f"{scenario_name:<14} "
-                f"{policy:<10} "
+                f"{policy_label:<10} "
                 f"{metrics['steps']:6d} "
                 f"{distance:9.2f} "
                 f"{cost_per_km:8.3f} "

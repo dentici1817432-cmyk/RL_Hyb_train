@@ -63,12 +63,30 @@ class Driver:
         self.speed_pid_kd = float(self.config.speed_pid_kd)
         self.speed_pid_integral_limit = max(float(self.config.speed_pid_integral_limit), 0.0)
         self.speed_pid_derivative_tau = max(float(self.config.speed_pid_derivative_filter_tau_s), 0.0)
+        self.speed_profile_dt = max(float(self.config.speed_profile_dt_seconds), 1e-3)
+        self.speed_profile_filter_enable = bool(self.config.speed_profile_filter_enable)
+        self.speed_profile_filter_tau_s = max(float(self.config.speed_profile_filter_tau_s), 0.0)
+        self.speed_preview_horizon_s = max(float(self.config.speed_preview_horizon_s), 0.0)
+        self.speed_planner_enable = bool(self.config.speed_planner_enable)
+        self.speed_planner_horizon_s = max(float(self.config.speed_planner_horizon_s), self.speed_profile_dt)
+        self.speed_planner_min_horizon_s = max(float(self.config.speed_planner_min_horizon_s), self.speed_profile_dt)
+        self.speed_planner_penalty_accel = max(float(self.config.speed_planner_penalty_accel), 0.0)
+        self.speed_planner_penalty_jerk = max(float(self.config.speed_planner_penalty_jerk), 0.0)
+        # Added robustness knobs
+        self.speed_error_deadband_mps = max(float(self.config.speed_error_deadband_mps), 0.0)
+        self.speed_integral_separation_mps = max(float(self.config.speed_integral_separation_mps), 0.0)
+        self.speed_disable_integral_when_saturated = bool(self.config.speed_disable_integral_when_saturated)
+        self.speed_measurement_filter_tau_s = max(float(self.config.speed_measurement_filter_tau_s), 0.0)
 
         self.manual_segments: List[tuple] = []
         self._build_manual_segments()
         self.manual_idx = 0
         self.manual_time_in_segment = 0.0
 
+        self._speed_schedule_raw = np.array([], dtype=np.float64)
+        self._speed_schedule_filtered = np.array([], dtype=np.float64)
+        self._speed_schedule_meta: List[Dict[str, Any]] = []
+        self._speed_schedule_total_time = 0.0
         self.speed_segments: List[Dict[str, Any]] = []
         self._build_speed_segments()
         self.speed_idx = 0
@@ -76,6 +94,7 @@ class Driver:
         self.use_speed_profile = len(self.speed_segments) > 0
         self._pid_derivative_state = 0.0
         self._last_accel_cmd = 0.0
+        self._speed_meas_filtered = 0.0
 
     def reset(self, episode_start_time: float = 0.0):
         """Reset driver state for a new episode."""
@@ -87,8 +106,11 @@ class Driver:
         self.speed_idx = 0
         self.speed_time_in_segment = 0.0
         if self.use_speed_profile and self.speed_segments:
-            segment0 = self._get_speed_segment(self.speed_idx)
-            initial_speed = segment0["start_speed"]
+            if self._speed_schedule_filtered.size > 0:
+                initial_speed = float(self._speed_schedule_filtered[0])
+            else:
+                segment0 = self._get_speed_segment(self.speed_idx)
+                initial_speed = segment0["start_speed"]
             self.state.target_speed_mps = initial_speed
             self.state.smoothed_target_speed_mps = initial_speed
         self.state.pid_integral = 0.0
@@ -96,6 +118,7 @@ class Driver:
         self.state.pid_prev_accel = 0.0
         self._pid_derivative_state = 0.0
         self._last_accel_cmd = 0.0
+        self._speed_meas_filtered = 0.0
 
     def step(self, dt: float, current_speed_mps: float = None) -> float:
         """Advance driver by dt seconds and return requested traction power."""
@@ -106,13 +129,26 @@ class Driver:
             current_speed_mps = 0.0
 
         self.state.current_time += dt
-        self.state.speed_mps = current_speed_mps
+        # Filter measured speed to reduce noise in D action and error
+        if self.speed_measurement_filter_tau_s > 0.0 and dt > 0.0:
+            alpha_m = dt / (self.speed_measurement_filter_tau_s + dt)
+            self._speed_meas_filtered = (
+                (1.0 - alpha_m) * self._speed_meas_filtered + alpha_m * float(current_speed_mps)
+            )
+            self.state.speed_mps = self._speed_meas_filtered
+        else:
+            self.state.speed_mps = current_speed_mps
 
         if self.use_speed_profile:
-            target_speed, target_accel, segment_meta = self._manual_speed_step(dt)
+            if self._speed_schedule_filtered.size > 0:
+                target_speed, schedule_accel, segment_meta = self._sample_speed_schedule(self.state.current_time)
+                planner_accel = self._plan_preview_accel(current_speed_mps, dt, schedule_accel)
+                target_accel = planner_accel
+            else:
+                target_speed, target_accel, segment_meta = self._manual_speed_step(dt)
             self.state.target_speed_mps = target_speed
             self._update_smoothed_target_speed(target_speed, dt)
-            self.state.is_dwelling = self.state.target_speed_mps <= self.dwell_speed_threshold
+            self.state.is_dwelling = self.state.target_speed_mps <= self.dwell_speed_threshold or bool(segment_meta.get("dwell"))
             if self.speed_tracking_use_pid:
                 raw_p_req = self._compute_speed_based_p_req_pid(
                     current_speed_mps=current_speed_mps,
@@ -149,7 +185,7 @@ class Driver:
 
         if not self.manual_segments:
             self.manual_segments.append((1.0, 0.0))
-    
+
     def _build_speed_segments(self):
         if not self.config.manual_speed_profile:
             return
@@ -192,9 +228,156 @@ class Driver:
                 }
             )
             prev_speed = end_speed
+        # Build pre-filtered schedule for planning / smoothing
+        self._build_speed_schedule()
 
     def _get_speed_segment(self, idx: int) -> Dict[str, Any]:
         return self.speed_segments[idx]
+
+    def _build_speed_schedule(self) -> None:
+        if not self.speed_segments:
+            self._speed_schedule_raw = np.array([], dtype=np.float64)
+            self._speed_schedule_filtered = np.array([], dtype=np.float64)
+            self._speed_schedule_meta = []
+            self._speed_schedule_total_time = 0.0
+            return
+
+        samples: List[float] = []
+        metas: List[Dict[str, Any]] = []
+        dt = self.speed_profile_dt
+        for seg in self.speed_segments:
+            duration = float(seg["duration"])
+            if duration <= 0.0:
+                continue
+            steps = max(1, int(np.ceil(duration / dt)))
+            for step_idx in range(steps):
+                progress = min(1.0, (step_idx * dt) / max(duration, 1e-6))
+                if seg["hold"]:
+                    speed = seg["end_speed"]
+                elif seg["interp"] == "linear":
+                    speed = seg["start_speed"] + (seg["end_speed"] - seg["start_speed"]) * progress
+                else:
+                    speed = seg["end_speed"]
+                samples.append(float(speed))
+                metas.append(seg["meta"])
+        if not samples:
+            self._speed_schedule_raw = np.array([], dtype=np.float64)
+            self._speed_schedule_filtered = np.array([], dtype=np.float64)
+            self._speed_schedule_meta = []
+            self._speed_schedule_total_time = 0.0
+            return
+        self._speed_schedule_raw = np.asarray(samples, dtype=np.float64)
+        self._speed_schedule_meta = metas
+        self._speed_schedule_total_time = len(samples) * dt
+        if self.speed_profile_filter_enable and self.speed_profile_filter_tau_s > 0.0:
+            filtered = self._zero_phase_filter(self._speed_schedule_raw, dt, self.speed_profile_filter_tau_s)
+        else:
+            filtered = self._speed_schedule_raw.copy()
+        self._speed_schedule_filtered = filtered
+
+    @staticmethod
+    def _zero_phase_filter(data: np.ndarray, dt: float, tau: float) -> np.ndarray:
+        if data.size == 0:
+            return data
+        alpha = dt / (tau + dt)
+        fwd = data.copy()
+        for i in range(1, fwd.size):
+            fwd[i] = fwd[i - 1] + alpha * (data[i] - fwd[i - 1])
+        bwd = fwd.copy()
+        for i in range(bwd.size - 2, -1, -1):
+            bwd[i] = bwd[i + 1] + alpha * (fwd[i] - bwd[i + 1])
+        return bwd
+
+    def _sample_speed_schedule(self, time_s: float) -> Tuple[float, float, Dict[str, Any]]:
+        if self._speed_schedule_filtered.size == 0:
+            raise RuntimeError("Speed schedule not initialized")
+        dt = self.speed_profile_dt
+        total_time = max(self._speed_schedule_total_time, dt)
+        if self.manual_loop:
+            t = float(time_s % total_time)
+        else:
+            t = float(min(time_s, total_time - dt))
+        idx = int(np.clip(t // dt, 0, self._speed_schedule_filtered.size - 1))
+        frac = float(min(max((t - idx * dt) / dt, 0.0), 1.0))
+        idx_next = min(idx + 1, self._speed_schedule_filtered.size - 1)
+        speed0 = self._speed_schedule_filtered[idx]
+        speed1 = self._speed_schedule_filtered[idx_next]
+        speed = (1.0 - frac) * speed0 + frac * speed1
+        accel = (speed1 - speed0) / dt
+        meta = self._speed_schedule_meta[idx]
+        return float(speed), float(accel), meta
+
+    def _lookup_filtered_speed(self, time_s: float) -> float:
+        if self._speed_schedule_filtered.size == 0:
+            return 0.0
+        dt = self.speed_profile_dt
+        total_time = max(self._speed_schedule_total_time, dt)
+        if self.manual_loop:
+            t = float(time_s % total_time)
+        else:
+            t = float(min(time_s, total_time - dt))
+        idx = int(np.clip(t // dt, 0, self._speed_schedule_filtered.size - 1))
+        frac = float(min(max((t - idx * dt) / dt, 0.0), 1.0))
+        idx_next = min(idx + 1, self._speed_schedule_filtered.size - 1)
+        speed0 = self._speed_schedule_filtered[idx]
+        speed1 = self._speed_schedule_filtered[idx_next]
+        return float((1.0 - frac) * speed0 + frac * speed1)
+
+    def _plan_preview_accel(self, current_speed_mps: float, dt: float, fallback_accel: float) -> float:
+        if (
+            not self.speed_planner_enable
+            or self._speed_schedule_filtered.size == 0
+            or dt <= 0.0
+        ):
+            return fallback_accel
+        horizon = max(
+            self.speed_planner_horizon_s,
+            self.speed_planner_min_horizon_s,
+            self.speed_preview_horizon_s,
+            dt,
+        )
+        horizon_steps = max(1, int(round(horizon / dt)))
+        v_sim = float(current_speed_mps)
+        accel_sim = float(self._last_accel_cmd)
+        planned_accel = fallback_accel
+        for step in range(horizon_steps):
+            t_future = self.state.current_time + (step + 1) * dt
+            v_target = self._lookup_filtered_speed(t_future)
+            remaining_steps = max(1, horizon_steps - step)
+            t_remaining = remaining_steps * dt
+            desired_accel = (v_target - v_sim) / max(t_remaining, dt)
+            desired_accel = float(
+                np.clip(
+                    desired_accel,
+                    -self.speed_tracking_brake_limit,
+                    self.speed_tracking_accel_limit,
+                )
+            )
+            if self.speed_tracking_jerk_limit is not None:
+                max_delta = self.speed_tracking_jerk_limit * dt
+                desired_accel = float(
+                    np.clip(
+                        desired_accel,
+                        accel_sim - max_delta,
+                        accel_sim + max_delta,
+                    )
+                )
+            if self.speed_planner_penalty_jerk > 0.0:
+                desired_accel = (
+                    (1.0 - self.speed_planner_penalty_jerk) * desired_accel
+                    + self.speed_planner_penalty_jerk * accel_sim
+                )
+            # Blend with fallback to penalize aggressive commands
+            if self.speed_planner_penalty_accel > 0.0:
+                desired_accel = (
+                    (1.0 - self.speed_planner_penalty_accel) * desired_accel
+                    + self.speed_planner_penalty_accel * fallback_accel
+                )
+            if step == 0:
+                planned_accel = desired_accel
+            v_sim += desired_accel * dt
+            accel_sim = desired_accel
+        return planned_accel
 
     def _manual_speed_step(self, dt: float) -> Tuple[float, float, Dict[str, Any]]:
         segment = self._get_speed_segment(self.speed_idx)
@@ -263,15 +446,35 @@ class Driver:
         segment_meta: Optional[Dict[str, Any]] = None,
     ) -> float:
         target_speed = self.state.smoothed_target_speed_mps
-        error = target_speed - current_speed_mps
+        # Use filtered measurement for error to reduce oscillations
+        meas_speed = self.state.speed_mps
+        error = target_speed - meas_speed
+        # Apply error deadband (shrink to zero inside band)
+        if self.speed_error_deadband_mps > 0.0:
+            abs_e = abs(error)
+            if abs_e <= self.speed_error_deadband_mps:
+                error = 0.0
+            else:
+                error = np.sign(error) * (abs_e - self.speed_error_deadband_mps)
         if dt <= 0.0:
             dt = 1.0
 
         prev_integral = self.state.pid_integral
-        integral = self.state.pid_integral + error * dt
-        if self.speed_pid_integral_limit > 0.0:
-            integral = float(np.clip(integral, -self.speed_pid_integral_limit, self.speed_pid_integral_limit))
-        self.state.pid_integral = integral
+        integral = self.state.pid_integral
+        # Integral separation: only integrate when sufficiently away from setpoint
+        do_integrate = True
+        if self.speed_integral_separation_mps > 0.0 and abs(error) < self.speed_integral_separation_mps:
+            do_integrate = False
+        # Disable integral while dwelling (helps avoid windup around zero speed)
+        if self.state.is_dwelling:
+            do_integrate = False
+        if do_integrate:
+            integral = self.state.pid_integral + error * dt
+            if self.speed_pid_integral_limit > 0.0:
+                integral = float(
+                    np.clip(integral, -self.speed_pid_integral_limit, self.speed_pid_integral_limit)
+                )
+            self.state.pid_integral = integral
 
         derivative = (error - self.state.pid_prev_error) / dt if dt > 1e-6 else 0.0
         if self.speed_pid_derivative_tau > 0.0:
@@ -285,7 +488,8 @@ class Driver:
             + self.speed_pid_kd * derivative
         )
         accel_cmd, saturated = self._apply_accel_constraints(target_accel + accel_unclamped, dt)
-        if saturated:
+        # Anti-windup: revert integral if saturated and policy enabled
+        if saturated and self.speed_disable_integral_when_saturated:
             self.state.pid_integral = prev_integral
         self.state.pid_prev_error = error
         self.state.pid_prev_accel = accel_cmd
