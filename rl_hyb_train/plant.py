@@ -233,6 +233,14 @@ class Plant:
         grade_percent = 0.0  # Default flat
         grade_force_n = 0.0
         
+        # Get current grade from driver if available
+        if hasattr(self, '_current_grade_percent'):
+            grade_percent = self._current_grade_percent
+        
+        grade_force_n = (
+            self.passenger_mass_tons * 1000.0 * 9.81 * grade_percent / 100.0
+        )
+        
         # Calculate net force and resulting acceleration
         # Positive force = acceleration, negative = deceleration
         net_force_n = traction_force_n - resistance_force_n - grade_force_n

@@ -60,7 +60,8 @@ class Env0(gym.Env):
             config.plant,
             config.battery,
             config.fuel_cell,
-            self.rng
+            self.rng,
+            train_config=getattr(config.train, 'train', None)
         )
         self.shield = Shield(
             config.shield,
@@ -258,6 +259,10 @@ class Env0(gym.Env):
                 elif speed_error < -0.5:  # Ahead of schedule
                     self._cumulative_delay_s = max(0.0, self._cumulative_delay_s + speed_error * self.config.sim.dt_seconds / target_speed)
 
+        # Set current grade for plant physics calculations
+        current_grade = self.driver.get_current_grade() if hasattr(self.driver, 'get_current_grade') else 0.0
+        self.plant._current_grade_percent = current_grade
+        
         # Advance plant
         p_loss_kw = self.config.driver.p_loss_watts / 1000.0
         self.plant.step(

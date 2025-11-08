@@ -744,6 +744,15 @@ class Driver:
     
     def get_current_grade(self) -> float:
         """Get current grade from timetable if available."""
+        # For manual profiles, check current segment if available
+        if self.use_speed_profile and hasattr(self, 'speed_segments') and self.speed_segments:
+            if self.speed_idx < len(self.speed_segments):
+                segment_meta = self.speed_segments[self.speed_idx].get('meta', {})
+                return segment_meta.get('grade_percent', 0.0)
+        return 0.0  # Default flat
+    
+    def get_current_grade(self) -> float:
+        """Get current grade from timetable if available."""
         if (self.use_timetable and 
             self.timetable and 
             self.state.current_route_segment_idx < len(self.timetable.route_segments)):
