@@ -31,7 +31,7 @@ class Env0(gym.Env):
     """
     Env0: Supervisory EMS (POMDP) environment for hybrid FC–Battery train.
     
-    Observation: Box(low=-1, high=1, shape=(10,), dtype=float32)
+    Observation: Box(low=-1, high=1, shape=(12,), dtype=float32)
     Action: Box(low=[0,-1], high=[1,1], dtype=float32) → [fc_frac, batt_cmd]
     """
     
@@ -68,11 +68,11 @@ class Env0(gym.Env):
             config.fuel_cell
         )
         
-        # Observation space: Box(low=-1, high=1, shape=(10,), dtype=float32)
+        # Observation space: Box(low=-1, high=1, shape=(12,), dtype=float32)
         self.observation_space = spaces.Box(
             low=-1.0,
             high=1.0,
-            shape=(10,),
+            shape=(12,),
             dtype=np.float32
         )
         
@@ -89,6 +89,7 @@ class Env0(gym.Env):
         self.last_action = np.array([0.5, 0.0], dtype=np.float32)
         self.p_req_filtered = 0.0  # Low-pass filtered P_req for observation
         self.p_req_next_kw = 0.0  # Pre-computed P_req for next step (fixes timing lag)
+        self.p_req_prev_filtered = 0.0  # Previous filtered P_req for trend calculation
         self.episode_info = EpisodeInfo()
         
         # Normalization ranges (for observation)
@@ -182,6 +183,7 @@ class Env0(gym.Env):
         )
         self.last_action = np.array([0.5, 0.0], dtype=np.float32)
         self.p_req_filtered = 0.0
+        self.p_req_prev_filtered = 0.0
         self.episode_info = EpisodeInfo()
         
         # Reset delay tracking
@@ -193,7 +195,8 @@ class Env0(gym.Env):
         
         # Pre-compute P_req for first step (fixes timing lag)
         self.p_req_next_kw = self.driver.step(self.config.sim.dt_seconds, current_speed_mps=self.plant.state.speed_mps)
-        # Update filtered P_req
+        # Update filtered P_req (save previous for trend calculation)
+        self.p_req_prev_filtered = self.p_req_filtered
         alpha = self.config.sim.dt_seconds / (
             self.config.driver.p_req_smoothing_tau_s + self.config.sim.dt_seconds
         )
@@ -290,7 +293,8 @@ class Env0(gym.Env):
 
         # Pre-compute P_req for NEXT step (fixes timing lag - EMS will see this P_req when deciding next action)
         self.p_req_next_kw = self.driver.step(self.config.sim.dt_seconds, current_speed_mps=self.plant.state.speed_mps)
-        # Update filtered P_req for observation
+        # Update filtered P_req for observation (save previous for trend calculation)
+        self.p_req_prev_filtered = self.p_req_filtered
         alpha = self.config.sim.dt_seconds / (
             self.config.driver.p_req_smoothing_tau_s + self.config.sim.dt_seconds
         )
@@ -308,7 +312,7 @@ class Env0(gym.Env):
     
     def _get_observation(self) -> np.ndarray:
         """Build observation vector (normalized to [-1, 1])."""
-        obs = np.zeros(10, dtype=np.float32)
+        obs = np.zeros(12, dtype=np.float32)
         
         # 1. Speed (normalized)
         obs[0] = np.clip(
@@ -326,26 +330,47 @@ class Env0(gym.Env):
         tank_obs = np.clip(self.plant.state.tank_level + tank_noise, 0.0, 1.0)
         obs[2] = tank_obs * 2.0 - 1.0
         
-        # 4. Timetable phase or distance-to-next-stop proxy
-        # Simple: fraction of episode elapsed
-        phase = self.episode_step / max(1, self.episode_length)
-        obs[3] = phase * 2.0 - 1.0
+        # 4. Time/Distance to next stop (normalized)
+        # Use time to next stop if available, otherwise episode phase
+        if hasattr(self.driver.state, 'next_stop_time') and self.driver.state.next_stop_time > self.driver.state.current_time:
+            time_to_stop = self.driver.state.next_stop_time - self.driver.state.current_time
+            # Normalize assuming max 10 minutes to next stop
+            obs[3] = np.clip((time_to_stop / 600.0) * 2.0 - 1.0, -1.0, 1.0)
+        else:
+            # Fallback to episode phase
+            phase = self.episode_step / max(1, self.episode_length)
+            obs[3] = phase * 2.0 - 1.0
         
-        # 5. Requested traction power P_req (filtered, normalized)
-        obs[4] = np.clip(
+        # 5. Grade preview/segment indicator (normalized)
+        # Get current segment grade if available
+        current_grade = 0.0
+        if hasattr(self.driver, 'speed_segments') and self.driver.speed_segments:
+            if self.driver.speed_idx < len(self.driver.speed_segments):
+                segment_meta = self.driver.speed_segments[self.driver.speed_idx].get('meta', {})
+                current_grade = segment_meta.get('grade_percent', 0.0)
+        # Normalize assuming grades in range [-5%, +5%]
+        obs[4] = np.clip((current_grade / 5.0) * 2.0 - 1.0, -1.0, 1.0)
+        
+        # 6. Requested traction power P_req (filtered, normalized)
+        obs[5] = np.clip(
             (self.p_req_filtered / self.p_req_max) * 2.0 - 1.0,
             -1.0, 1.0
         )
         
-        # 6-7. Last action
-        obs[5] = self.last_action[0] * 2.0 - 1.0  # fc_frac [0,1] -> [-1,1]
-        obs[6] = self.last_action[1]  # batt_cmd already [-1,1]
+        # 7. P_req trend (derivative, normalized)
+        p_req_trend = (self.p_req_filtered - self.p_req_prev_filtered) / self.config.sim.dt_seconds
+        # Normalize assuming max change of 1000 kW/s
+        obs[6] = np.clip((p_req_trend / 1000.0) * 2.0 - 1.0, -1.0, 1.0)
         
-        # 8-10. Nuisance noise channels
+        # 8-9. Last action
+        obs[7] = self.last_action[0] * 2.0 - 1.0  # fc_frac [0,1] -> [-1,1]
+        obs[8] = self.last_action[1]  # batt_cmd already [-1,1]
+        
+        # 10-12. Nuisance noise channels
         noise_std = self.config.observations.nuisance_noise_std
-        obs[7] = self.rng.normal(0.0, noise_std)
-        obs[8] = self.rng.normal(0.0, noise_std)
         obs[9] = self.rng.normal(0.0, noise_std)
+        obs[10] = self.rng.normal(0.0, noise_std)
+        obs[11] = self.rng.normal(0.0, noise_std)
         
         # Clip to [-1, 1]
         obs = np.clip(obs, -1.0, 1.0)

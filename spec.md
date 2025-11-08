@@ -51,6 +51,56 @@ This document lists **all systems and technical specs** needed to implement **En
 
 ## 3) Driver/ATO Specification
 
+**3) MPC Driver (most precise, still lightweight)**
+
+Receding-horizon speed planning using Model Predictive Control (MPC), which optimizes a short-horizon cost at each time step to generate smooth, energy-efficient, and punctual trajectories:
+
+At each step, MPC solves:
+
+\[
+\min_{a_{t:t+H-1}} \sum_{k=t}^{t+H-1}
+  \left[
+    \alpha_1 (v_k - v_k^\star)^2
+    + \alpha_2\,(\mathrm{power\_req}_k)^2
+    + \alpha_3\,(\mathrm{brake\_req}_k)^2
+  \right]
+\]
+
+**Subject to:**
+- **Dynamics:**
+  \[
+  m\,\dot{v} =
+      \frac{P_{\text{wheel}}}{\max(v,\,\varepsilon)}
+      - (A+Bv+C v^2)
+      - mg\sin\theta
+  \]
+  where \(m\) is vehicle mass, \(A,B,C\) are Davis params, \(\theta\) is grade, and \(\varepsilon\) avoids division by zero.
+
+- **Speed limits:** 
+  \[
+  v_k \le v_{\max}(s_k)
+  \]
+  Also subject to **stop constraints**, **comfort (jerk/acc limits)**, and possible **adhesion** constraints.
+
+- **Terminal constraint:**  
+  The final time in the planning horizon must align with the scheduled arrival time (or maintain non-negative slack).
+
+- **Input conversion:**  
+  The planned acceleration \(a_k\) (or jerk/velocity profile) is unrolled; for each step, \(P_{\text{req}}\) is derived as
+  \[
+  P_{\text{req},k} = (m a_k + A + B v_k + C v_k^2 + m g \sin\theta) \cdot v_k
+  \]
+
+The MPC procedure re-solves this optimization every control step (typically each second), delivering:
+- **Smooth and efficient speed trajectories**, favoring limited braking (high regen potential)
+- **On-time arrivals** (by terminal constraint)
+- **Tunable tradeoff** between timeliness, smoothness, and energy via \(\alpha_1, \alpha_2, \alpha_3\)
+
+MPC achieves "nicest" trajectories — i.e., maximally smooth (good for regenerative recovery) and can make explicit tradeoffs (e.g., penalize braking or deviation from target). Such a driver is especially useful as a strong baseline or for ablation.
+
+
+
+
 **Inputs:** Timetable, speed limits vs position, route grade profile, adhesion coefficient \(\mu\).
 
 **Procedure per step:**

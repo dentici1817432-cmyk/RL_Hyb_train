@@ -22,6 +22,29 @@ class SimConfig:
 
 
 @dataclass
+class RouteConfig:
+    profiles: List[str] = field(default_factory=lambda: ["flat", "rolling", "mild_mountain"])
+    grade_segments_percent: List[float] = field(default_factory=lambda: [0.02, 0.00, -0.01])
+    segment_duration_s: float = 600.0
+    speed_limits_mps: List[float] = field(default_factory=lambda: [40.0, 35.0, 30.0])
+
+
+@dataclass
+class StopsConfig:
+    count: int = 3
+    dwell_mean_s: float = 60.0
+    dwell_jitter_frac: float = 0.2
+
+
+@dataclass
+class DrivelineConfig:
+    eta_traction: float = 0.85
+    eta_regen: float = 0.75
+    aux_base_kw: float = 200.0
+    aux_bias_rw_sigma_kw: float = 0.1
+
+
+@dataclass
 class DriverConfig:
     p_req_smoothing_tau_s: float = 2.0
     p_req_rate_limit_kw_per_s: float = 400.0
@@ -29,6 +52,16 @@ class DriverConfig:
     manual_loop: bool = False
     manual_p_req_profile: List[Dict[str, float]] = field(default_factory=list)
     manual_speed_profile: List[Dict[str, float]] = field(default_factory=list)
+    # New spec-compliant driver parameters
+    pid_kp: float = 5.0
+    pid_ki: float = 0.0
+    pid_kd: float = 1.5
+    adhesion_mu_min: float = 0.2
+    adhesion_mu_max: float = 0.35
+    traction_power_max_kw: float = 1000.0
+    regen_power_max_kw: float = 400.0
+    req_lpf_tau_s: float = 3.0
+    trend_window_s: float = 3.0
     speed_target_smoothing_tau_s: float = 8.0
     speed_tracking_tau_s: float = 12.0
     speed_tracking_accel_limit_mps2: float = 0.5
@@ -58,6 +91,16 @@ class DriverConfig:
     speed_integral_separation_mps: float = 0.6
     speed_disable_integral_when_saturated: bool = True
     speed_measurement_filter_tau_s: float = 4.0
+
+
+@dataclass
+class TrainConfig:
+    """Train physics parameters for realistic dynamics."""
+    mass_tons_min: float = 180.0
+    mass_tons_max: float = 260.0
+    davis_A_N: float = 5000.0  # Rolling resistance constant
+    davis_B_N_per_mps: float = 100.0  # Rolling resistance linear term  
+    davis_C_N_per_mps2: float = 5.0  # Rolling resistance quadratic term
 
 
 @dataclass
@@ -179,6 +222,7 @@ class LoggingConfig:
 class TrainModelConfig:
     """Parameters that define the physical train model."""
 
+    train: TrainConfig = field(default_factory=TrainConfig)
     plant: PlantConfig = field(default_factory=PlantConfig)
     battery: BatteryConfig = field(default_factory=BatteryConfig)
     fuel_cell: FuelCellConfig = field(default_factory=FuelCellConfig)
@@ -191,6 +235,9 @@ class ScenarioConfig:
     """Scenario definition: track, schedule, observation model."""
 
     sim: SimConfig = field(default_factory=SimConfig)
+    route: RouteConfig = field(default_factory=RouteConfig)
+    stops: StopsConfig = field(default_factory=StopsConfig)
+    driveline: DrivelineConfig = field(default_factory=DrivelineConfig)
     driver: DriverConfig = field(default_factory=DriverConfig)
     reward_weights: RewardWeightsConfig = field(default_factory=RewardWeightsConfig)
     randomization: RandomizationConfig = field(default_factory=RandomizationConfig)
@@ -230,6 +277,22 @@ class Config:
     @property
     def driver(self) -> DriverConfig:
         return self.scenario.driver
+
+    @property
+    def route(self) -> RouteConfig:
+        return self.scenario.route
+
+    @property
+    def stops(self) -> StopsConfig:
+        return self.scenario.stops
+
+    @property
+    def driveline(self) -> DrivelineConfig:
+        return self.scenario.driveline
+
+    @property
+    def train_physics(self) -> TrainConfig:
+        return self.train.train
 
     @property
     def plant(self) -> PlantConfig:
@@ -286,6 +349,7 @@ class Config:
         train_data = data.get("train")
         if train_data:
             return TrainModelConfig(
+                train=TrainConfig(**train_data.get("train", {})),
                 plant=PlantConfig(**train_data.get("plant", {})),
                 battery=BatteryConfig(**train_data.get("battery", {})),
                 fuel_cell=FuelCellConfig(**train_data.get("fuel_cell", {})),
@@ -294,6 +358,7 @@ class Config:
             )
         # Legacy top-level fields
         return TrainModelConfig(
+            train=TrainConfig(**data.get("train", {})),
             plant=PlantConfig(**data.get("plant", {})),
             battery=BatteryConfig(**data.get("battery", {})),
             fuel_cell=FuelCellConfig(**data.get("fuel_cell", {})),
@@ -307,6 +372,9 @@ class Config:
         if scenario_data:
             return ScenarioConfig(
                 sim=SimConfig(**scenario_data.get("sim", {})),
+                route=RouteConfig(**scenario_data.get("route", {})),
+                stops=StopsConfig(**scenario_data.get("stops", {})),
+                driveline=DrivelineConfig(**scenario_data.get("driveline", {})),
                 driver=DriverConfig(**scenario_data.get("driver", {})),
                 reward_weights=RewardWeightsConfig(**scenario_data.get("reward_weights", {})),
                 randomization=RandomizationConfig(**scenario_data.get("randomization", {})),
@@ -317,6 +385,9 @@ class Config:
         # Legacy top-level fields
         return ScenarioConfig(
             sim=SimConfig(**data.get("sim", {})),
+            route=RouteConfig(**data.get("route", {})),
+            stops=StopsConfig(**data.get("stops", {})),
+            driveline=DrivelineConfig(**data.get("driveline", {})),
             driver=DriverConfig(**data.get("driver", {})),
             reward_weights=RewardWeightsConfig(**data.get("reward_weights", {})),
             randomization=RandomizationConfig(**data.get("randomization", {})),
