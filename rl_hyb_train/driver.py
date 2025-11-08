@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import List, Dict, Any, Tuple, Optional
 
 from .config import DriverConfig, RandomizationConfig
+from .timetable import TimetableGenerator, Timetable, Stop, RouteSegment
 
 
 @dataclass
@@ -24,6 +25,10 @@ class DriverState:
     pid_prev_error: float = 0.0
     pid_prev_accel: float = 0.0
     p_req_filtered: float = 0.0
+    # New state for timetable-based driving
+    current_position_m: float = 0.0
+    current_stop_idx: int = 0
+    current_route_segment_idx: int = 0
 
 
 class Driver:
@@ -35,11 +40,21 @@ class Driver:
         randomization_config: RandomizationConfig,
         rng: np.random.Generator,
         plant_kinematic_gain_mps_per_watt: float = None,
+        route_config=None,
+        stops_config=None,
     ):
         self.config = config
         self.randomization_config = randomization_config
         self.rng = rng
         self.state = DriverState()
+        
+        # Timetable generation support
+        self.timetable = None
+        self.use_timetable = route_config is not None and stops_config is not None
+        if self.use_timetable:
+            self.timetable_generator = TimetableGenerator(route_config, stops_config, rng)
+        else:
+            self.timetable_generator = None
 
         self.p_req_smoothing_tau_s = max(config.p_req_smoothing_tau_s, 0.0)
         self.p_req_rate_limit_kw_per_s = config.p_req_rate_limit_kw_per_s
@@ -99,20 +114,32 @@ class Driver:
     def reset(self, episode_start_time: float = 0.0):
         """Reset driver state for a new episode."""
         self.state = DriverState(current_time=episode_start_time)
-        initial_p_req = self.manual_segments[0][1] if self.manual_segments else 0.0
-        self.state.p_req_filtered = initial_p_req
-        self.manual_idx = 0
-        self.manual_time_in_segment = 0.0
-        self.speed_idx = 0
-        self.speed_time_in_segment = 0.0
-        if self.use_speed_profile and self.speed_segments:
-            if self._speed_schedule_filtered.size > 0:
-                initial_speed = float(self._speed_schedule_filtered[0])
+        
+        # Generate timetable if using timetable mode
+        if self.use_timetable:
+            self.timetable = self.timetable_generator.generate()
+            self.state.current_position_m = 0.0
+            self.state.current_stop_idx = 0
+            self.state.current_route_segment_idx = 0
+            initial_speed = 0.0
+        else:
+            initial_p_req = self.manual_segments[0][1] if self.manual_segments else 0.0
+            self.state.p_req_filtered = initial_p_req
+            self.manual_idx = 0
+            self.manual_time_in_segment = 0.0
+            self.speed_idx = 0
+            self.speed_time_in_segment = 0.0
+            if self.use_speed_profile and self.speed_segments:
+                if self._speed_schedule_filtered.size > 0:
+                    initial_speed = float(self._speed_schedule_filtered[0])
+                else:
+                    segment0 = self._get_speed_segment(self.speed_idx)
+                    initial_speed = segment0["start_speed"]
             else:
-                segment0 = self._get_speed_segment(self.speed_idx)
-                initial_speed = segment0["start_speed"]
-            self.state.target_speed_mps = initial_speed
-            self.state.smoothed_target_speed_mps = initial_speed
+                initial_speed = 0.0
+        
+        self.state.target_speed_mps = initial_speed
+        self.state.smoothed_target_speed_mps = initial_speed
         self.state.pid_integral = 0.0
         self.state.pid_prev_error = 0.0
         self.state.pid_prev_accel = 0.0
@@ -139,7 +166,10 @@ class Driver:
         else:
             self.state.speed_mps = current_speed_mps
 
-        if self.use_speed_profile:
+        # Choose control mode: timetable vs manual profiles
+        if self.use_timetable:
+            return self._step_timetable(dt, current_speed_mps)
+        elif self.use_speed_profile:
             if self._speed_schedule_filtered.size > 0:
                 target_speed, schedule_accel, segment_meta = self._sample_speed_schedule(self.state.current_time)
                 planner_accel = self._plan_preview_accel(current_speed_mps, dt, schedule_accel)
@@ -583,3 +613,117 @@ class Driver:
             self.state.p_req_filtered = alpha * p_req_kw + (1.0 - alpha) * self.state.p_req_filtered
 
         return self.state.p_req_filtered
+    
+    def set_passenger_mass(self, mass_tons: float):
+        """Set passenger mass for adhesion calculations."""
+        self._passenger_mass_tons = mass_tons
+    
+    def _step_timetable(self, dt: float, current_speed_mps: float) -> float:
+        """Step using timetable-based control."""
+        if not self.timetable:
+            return 0.0
+        
+        # Update position based on current speed
+        self.state.current_position_m += current_speed_mps * dt
+        
+        # Check if at a stop
+        at_stop = False
+        dwell_time = 0.0
+        next_stop_time = float('inf')
+        
+        if self.state.current_stop_idx < len(self.timetable.stops):
+            stop = self.timetable.stops[self.state.current_stop_idx]
+            distance_to_stop = stop.position_m - self.state.current_position_m
+            
+            # Check if we've arrived at stop (within threshold)
+            if distance_to_stop <= 5.0 and abs(current_speed_mps) < 1.0:  # 5m threshold
+                at_stop = True
+                dwell_time = stop.dwell_time_s
+                next_stop_time = self.state.current_time + dwell_time
+                
+                # Update next stop info for observation
+                if self.state.current_stop_idx + 1 < len(self.timetable.stops):
+                    next_stop = self.timetable.stops[self.state.current_stop_idx + 1]
+                    self.state.next_stop_time = self.state.current_time + (next_stop.position_m - self.state.current_position_m) / 15.0
+                else:
+                    self.state.next_stop_time = float('inf')
+        
+        # Get current route segment
+        current_segment = None
+        if self.state.current_route_segment_idx < len(self.timetable.route_segments):
+            current_segment = self.timetable.route_segments[self.state.current_route_segment_idx]
+            
+            # Update route segment index if we've passed this segment
+            while (current_segment and 
+                   self.state.current_position_m >= current_segment.end_position_m and 
+                   self.state.current_route_segment_idx + 1 < len(self.timetable.route_segments)):
+                self.state.current_route_segment_idx += 1
+                current_segment = self.timetable.route_segments[self.state.current_route_segment_idx]
+        
+        # Determine target speed based on speed limit and schedule
+        speed_limit = current_segment.speed_limit_mps if current_segment else 30.0
+        
+        if at_stop:
+            target_speed = 0.0
+            self.state.is_dwelling = True
+            self.state.dwell_end_time = next_stop_time
+        else:
+            target_speed = speed_limit
+            self.state.is_dwelling = False
+            self.state.dwell_end_time = 0.0
+        
+        # Use PID control to track target speed
+        speed_error = target_speed - current_speed_mps
+        pid_output = (
+            self.config.pid_kp * speed_error +
+            self.config.pid_ki * self.state.pid_integral +
+            self.config.pid_kd * (speed_error - self.state.pid_prev_error)
+        )
+        
+        # Update PID state
+        if not at_stop:  # Don't accumulate integral during dwell
+            self.state.pid_integral += speed_error * dt
+            self.state.pid_integral = np.clip(
+                self.state.pid_integral, -10.0, 10.0  # Anti-windup
+            )
+        else:
+            self.state.pid_integral = 0.0
+        
+        self.state.pid_prev_error = speed_error
+        
+        # Convert PID output to force (N) then power (kW)
+        target_force = pid_output * 1000.0  # Scale to reasonable force
+        
+        # Apply adhesion limits
+        if hasattr(self, '_passenger_mass_tons'):
+            mass_kg = self._passenger_mass_tons * 1000.0
+        else:
+            mass_kg = 220000.0  # Default 220 tons
+        
+        adhesion_mu = self.rng.uniform(
+            self.config.adhesion_mu_min, 
+            self.config.adhesion_mu_max
+        )
+        max_force = adhesion_mu * mass_kg * 9.81
+        target_force = np.clip(target_force, -max_force, max_force)
+        
+        # Convert to requested power
+        if current_speed_mps > 0.5:  # Avoid division by very small numbers
+            p_req_kw = (target_force * current_speed_mps) / 1000.0
+        else:
+            # At very low speeds, use force directly
+            p_req_kw = np.sign(target_force) * min(abs(target_force * 5.0 / 1000.0), 100.0)
+        
+        # Apply power limits
+        p_req_kw = np.clip(
+            p_req_kw, 
+            -self.config.regen_power_max_kw, 
+            self.config.traction_power_max_kw
+        )
+        
+        # Apply grade effect (simplified - additional power needed for grades)
+        if current_segment:
+            grade_power_kw = (mass_kg * 9.81 * current_segment.grade_percent / 100.0 * current_speed_mps) / 1000.0
+            p_req_kw += grade_power_kw
+        
+        return p_req_kw

@@ -54,7 +54,9 @@ class Env0(gym.Env):
             config.driver,
             config.randomization,
             self.rng,
-            plant_kinematic_gain_mps_per_watt=config.plant.kinematic_gain_mps_per_watt
+            plant_kinematic_gain_mps_per_watt=config.plant.kinematic_gain_mps_per_watt,
+            route_config=getattr(config.scenario, 'route', None),
+            stops_config=getattr(config.scenario, 'stops', None)
         )
         self.plant = Plant(
             config.plant,
@@ -167,6 +169,7 @@ class Env0(gym.Env):
         
         # Reset components
         self.driver.reset()
+        self.driver.set_passenger_mass(passenger_mass_tons)
         self.plant.reset(
             soc_init=soc_init,
             tank_init=tank_init,
