@@ -150,6 +150,7 @@ class RendererConfig:
     video_path: str = "runs/env0_episode.mp4"
     write_png_every: int = 0
     interactive: bool = False
+    use_enhanced_renderer: bool = True  # Enable enhanced renderer with 3D visualization
     colors: Dict[str, str] = field(
         default_factory=lambda: {
             "demand": "#000000",

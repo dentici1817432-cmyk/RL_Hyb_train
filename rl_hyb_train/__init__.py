@@ -13,8 +13,6 @@ from .policies import (
     ScenarioAwareEMS,
     MPCEms,
     RLEMS,
-    OfflineOptimalEMS,
-    plan_offline_schedule,
 )
 
 __all__ = [
@@ -25,8 +23,6 @@ __all__ = [
     "ScenarioAwareEMS",
     "MPCEms",
     "RLEMS",
-    "OfflineOptimalEMS",
-    "plan_offline_schedule",
     "make_env",
 ]
 

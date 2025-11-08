@@ -4,9 +4,11 @@ version = "0.1.0"
 description = "Supervisory EMS (POMDP) for Hybrid FC–Battery Train - RL training environment"
 requires-python = ">=3.11"
 dependencies = [
+    "cvxpy>=1.7.3",
     "gymnasium>=1.2.2",
     "numpy>=2.3.4",
     "pyyaml>=6.0.3",
+    "stable-baselines3>=2.7.0",
 ]
 
 [project.optional-dependencies]

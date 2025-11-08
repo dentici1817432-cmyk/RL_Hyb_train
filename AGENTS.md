@@ -46,16 +46,9 @@ env0.md                  # Detailed specification document
 All parameters are defined in `conf.yaml` and loaded via `Config.from_yaml()`.
 
 **Key config sections:**
-- `sim`: Time step, episode length, seed
-- `driver`: Speed profile, stops, grades, jitter
-- `plant`: Speed limits, kinematic gain, auxiliaries
-- `battery`: Capacity, power limits, efficiencies, SOC bounds
-- `fuel_cell`: Power, efficiency, H2 tank, ramp limits
-- `shield`: SOC corridor, constraint enforcement flags
-- `costs`: H2 and grid electricity costs
-- `reward_weights`: Smoothness, delay, unmet demand penalties
-- `randomization`: Episode randomization ranges
-- `observations`: Observation space configuration
+- `train.*`: Physical model parameters (`plant`, `battery`, `fuel_cell`, `shield`, `costs`)
+- `scenario.*`: Episode definition (`sim`, `driver`, `reward_weights`, `randomization`, `observations`, `renderer`, `logging`)
+- `policy.*`: Default EMS choice plus tuning knobs per policy (optional)
 
 **Usage:**
 ```python
@@ -386,4 +379,3 @@ Check:
 2. `conf.yaml` for all configurable parameters
 3. Docstrings in source code for API details
 4. `main.py` for example usage
-

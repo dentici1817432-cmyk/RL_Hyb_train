@@ -17,7 +17,6 @@ from rl_hyb_train.policies import (
     RLEMS,
     MPCEms,
     MPCConfig,
-    OfflineOptimalEMS,
 )
 from rl_hyb_train.powerflow import compute_power_balance
 from rl_hyb_train.speed_profile import generate_feasible_profile, Cruise
@@ -439,12 +438,6 @@ def build_ems(
     if policy == "mpc":
         mpc_tuning = MPCConfig(**policy_cfg.mpc) if policy_cfg.mpc else None
         return MPCEms(config, tuning=mpc_tuning)
-
-    if policy == "offline_opt":
-        # Expand the provided scenario profile into a per-step P_req vector.
-        dt = float(config.scenario.sim.dt_seconds)
-        p_req_series = _expand_preq_profile_vector(profile, dt)
-        return OfflineOptimalEMS(config, p_req_series)
 
     raise ValueError(f"Unknown policy {policy}")
 

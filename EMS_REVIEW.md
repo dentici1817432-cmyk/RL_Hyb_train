@@ -30,7 +30,7 @@ Plant → Power Balance & Speed Update
 
 ---
 
-### 2. Baseline EMS (`baseline_ems.py`)
+### 2. Baseline EMS (`rl_hyb_train/policies/baseline.py`)
 
 **Strategy:** Battery-only mode (FC disabled in current config)
 
@@ -218,7 +218,7 @@ else:
 ```
 
 ### Issue #4: EMS Regen Logic Error ⚠️ MEDIUM PRIORITY
-**Location:** `baseline_ems.py` line 90-104
+**Location:** `rl_hyb_train/policies/baseline.py` line 90-104
 
 **Problem:**
 - When `P_req` is negative but magnitude < `P_aux`, demand is still positive
@@ -261,4 +261,3 @@ After fixes:
 3. Test regen scenarios (negative P_req)
 4. Verify battery efficiency affects power delivery
 5. Check that unmet demand reduces speed acceleration
-

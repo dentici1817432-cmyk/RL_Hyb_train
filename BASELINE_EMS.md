@@ -1,6 +1,8 @@
 # Baseline EMS
 
-A simple rule-based Energy Management System (EMS) for testing the RL Hybrid Train environment.
+A simple rule-based Energy Management System (EMS) for testing the RL Hybrid Train environment. The
+implementation lives in `rl_hyb_train/policies/baseline.py` and is re-exported via
+`rl_hyb_train.baseline_ems` for backward compatibility.
 
 ## Strategy
 
@@ -30,8 +32,8 @@ ems = BaselineEMS(config)
 # Run episode
 obs, info = env.reset()
 for step in range(1000):
-    # Get action from baseline EMS
-    action = ems.act_from_info(info)
+    # Get action from baseline EMS (uses info dict internally)
+    action = ems.act(obs, info)
     
     # Step environment
     obs, reward, terminated, truncated, info = env.step(action)
@@ -59,4 +61,3 @@ This will run a full episode and report:
 - Average and max unmet demand
 - Constraint violations
 - Performance metrics (cost per km)
-

@@ -2,6 +2,15 @@
 import numpy as np
 from dataclasses import dataclass
 from .config import PlantConfig, BatteryConfig, FuelCellConfig
+from .powerflow import (
+    allocate_battery_charging,
+    compute_power_balance,
+    compute_regen_flow,
+    fc_excess_power,
+    h2_consumption_kg,
+    resolve_battery_flow,
+    soc_delta,
+)
 
 
 @dataclass
@@ -119,118 +128,75 @@ class Plant:
         self.state.p_dem_kw = p_dem_kw
         self.state.p_loss_kw = p_loss_kw
         
-        # Store actual FC and battery power
+        # Store actual FC power
         self.state.p_fc_kw = p_fc_kw
-        self.state.p_batt_kw = p_batt_kw
         
-        # Power balance
-        p_batt_discharge = max(p_batt_kw, 0.0)  # Only discharge contributes to supply
-        p_batt_charge = max(-p_batt_kw, 0.0)
-        self.state.p_batt_discharge_kw = p_batt_discharge
-        self.state.p_batt_charge_kw = p_batt_charge
-        
-        # Check available charging sources BEFORE preventing invalid charging
-        # Initialize charging sources
-        p_batt_charge_regen_available = 0.0
-        p_batt_charge_fc_available = 0.0
-        p_regen_post_aux = 0.0
-        p_brake_total_kw = 0.0
-        p_brake_aux_kw = 0.0
-        p_brake_regen_kw = 0.0
-        p_brake_friction_kw = 0.0
-        
-        if p_batt_charge > 0.0:
-            # Check if regen is available (P_req < 0 and train is moving)
-            if p_req_kw < 0.0 and self.state.speed_mps > 0.01:
-                p_regen_available = abs(p_req_kw)
-                # Aux loads consume regen first; only excess can charge the battery
-                p_brake_total_kw = p_regen_available
-                p_brake_aux_kw = min(p_regen_available, p_aux_kw)
-                p_regen_post_aux = max(0.0, p_regen_available - p_aux_kw)
-                p_batt_charge_regen_available = min(p_batt_charge, p_regen_post_aux)
-            
-            # Check FC excess availability
-            if p_fc_kw > 0.0:
-                if p_dem_kw <= 0.0:
-                    # Negative or zero demand: all FC power can charge battery
-                    p_fc_excess = p_fc_kw
-                else:
-                    # Positive demand: FC excess = FC - demand
-                    p_fc_excess = max(0.0, p_fc_kw - p_dem_kw)
-                
-                if p_fc_excess > 0.0:
-                    remaining_charge = p_batt_charge - p_batt_charge_regen_available
-                    p_batt_charge_fc_available = min(remaining_charge, p_fc_excess)
-            
-            # Prevent charging if there's no power source (no regen and no FC excess)
-            total_available_charge = p_batt_charge_regen_available + p_batt_charge_fc_available
-            if total_available_charge < p_batt_charge:
-                # Battery is trying to charge more than available power sources allow
-                # Clamp charging to available power sources
-                p_batt_charge = total_available_charge
-                # Update battery power to reflect actual charging (negative = charge)
-                self.state.p_batt_kw = -p_batt_charge if total_available_charge > 0.0 else 0.0
-                # Recalculate discharge
-                p_batt_discharge = max(self.state.p_batt_kw, 0.0)
-                p_batt_charge = max(-self.state.p_batt_kw, 0.0)
-                self.state.p_batt_discharge_kw = p_batt_discharge
-                self.state.p_batt_charge_kw = p_batt_charge
-
-        if p_req_kw < 0.0:
-            if self.state.speed_mps > 0.01:
-                p_brake_regen_kw = p_brake_aux_kw + p_batt_charge_regen_available
-                p_brake_friction_kw = max(0.0, abs(p_req_kw) - p_brake_regen_kw)
-            else:
-                p_brake_total_kw = abs(p_req_kw)
-                p_brake_aux_kw = 0.0
-                p_brake_regen_kw = 0.0
-                p_brake_friction_kw = p_brake_total_kw
-        
-        # Apply battery efficiency to actual power delivered
-        # Discharge efficiency: commanded power * efficiency = actual delivered power
-        p_batt_delivered_kw = p_batt_discharge * self.battery_config.eta_discharge
-        self.state.p_batt_delivered_kw = p_batt_delivered_kw
-        
-        # Power balance: check if supply meets demand
-        p_supply_kw = p_fc_kw + p_batt_delivered_kw
-        self.state.p_supply_kw = p_supply_kw
-        residual = p_dem_kw - p_supply_kw
-        
-        # Unmet demand (when supply < demand)
-        self.state.p_unmet_kw = max(residual, 0.0)
-        
-        # If residual < 0, excess can charge battery (already handled by shield)
-        
-        # SOC update (coulomb counting)
-        soc_delta = (
-            -p_batt_discharge / (self.battery_config.e_batt_kwh * self.battery_config.eta_discharge) * dt_hours
-            + p_batt_charge * self.battery_config.eta_charge / self.battery_config.e_batt_kwh * dt_hours
+        raw_batt_flow = resolve_battery_flow(p_batt_kw, self.battery_config.eta_discharge)
+        regen_flow = compute_regen_flow(
+            p_req_kw=p_req_kw,
+            speed_mps=self.state.speed_mps,
+            p_aux_kw=p_aux_kw,
+            charge_cmd_kw=raw_batt_flow.charge_kw,
         )
-        self.state.soc = np.clip(self.state.soc + soc_delta, 0.0, 1.0)
+        fc_excess = fc_excess_power(p_fc_kw, p_dem_kw)
+        charge_alloc = allocate_battery_charging(raw_batt_flow.charge_kw, regen_flow, fc_excess)
         
-        # H2 consumption
-        if p_fc_kw > 0:
-            delta_m_h2_kg = (p_fc_kw / (self.fc_config.eta_fc * self.fc_config.h2_lhv_kwh_per_kg)) * dt_hours
-            self.state.tank_level -= delta_m_h2_kg / self.fc_config.tank_capacity_kg
-            self.state.tank_level = max(0.0, self.state.tank_level)
+        if p_batt_kw >= 0.0:
+            actual_batt_kw = p_batt_kw
         else:
-            delta_m_h2_kg = 0.0
+            actual_batt_kw = -charge_alloc.actual_kw if charge_alloc.actual_kw > 0.0 else 0.0
+        
+        batt_flow = resolve_battery_flow(actual_batt_kw, self.battery_config.eta_discharge)
+        self.state.p_batt_kw = actual_batt_kw
+        self.state.p_batt_discharge_kw = batt_flow.discharge_kw
+        self.state.p_batt_charge_kw = batt_flow.charge_kw
+        self.state.p_batt_delivered_kw = batt_flow.delivered_kw
+        self.state.p_batt_charge_regen_kw = charge_alloc.from_regen_kw
+        self.state.p_batt_charge_fc_kw = charge_alloc.from_fc_kw
+        
+        balance = compute_power_balance(
+            p_req_kw=p_req_kw,
+            p_aux_kw=p_aux_kw,
+            p_fc_kw=p_fc_kw,
+            p_batt_delivered_kw=batt_flow.delivered_kw,
+        )
+        self.state.p_dem_kw = balance.p_dem_kw
+        self.state.p_supply_kw = balance.p_supply_kw
+        self.state.p_unmet_kw = balance.p_unmet_kw
+        self.state.p_delivered_kw = balance.p_delivered_kw
+        
+        soc_delta_val = soc_delta(
+            discharge_kw=batt_flow.discharge_kw,
+            charge_kw=batt_flow.charge_kw,
+            eta_discharge=self.battery_config.eta_discharge,
+            eta_charge=self.battery_config.eta_charge,
+            e_batt_kwh=self.battery_config.e_batt_kwh,
+            dt_hours=dt_hours,
+        )
+        self.state.soc = np.clip(self.state.soc + soc_delta_val, 0.0, 1.0)
+        
+        delta_m_h2_kg = h2_consumption_kg(
+            p_fc_kw=p_fc_kw,
+            eta_fc=self.fc_config.eta_fc,
+            h2_lhv_kwh_per_kg=self.fc_config.h2_lhv_kwh_per_kg,
+            dt_hours=dt_hours,
+        )
+        if delta_m_h2_kg > 0.0:
+            self.state.tank_level = max(
+                0.0,
+                self.state.tank_level - delta_m_h2_kg / self.fc_config.tank_capacity_kg,
+            )
         
         # Kinematics (toy model)
         # Delivered traction power accounts for limited supply and unmet demand,
         # and braking power acts against motion (regen + friction).
-        p_delivered_kw = (
-            p_fc_kw
-            + p_batt_delivered_kw
-            - p_aux_kw
-            - self.state.p_unmet_kw
-        )
-        self.state.p_delivered_kw = p_delivered_kw
-        self.state.p_regen_post_aux_kw = p_regen_post_aux
+        p_delivered_kw = self.state.p_delivered_kw
+        self.state.p_regen_post_aux_kw = regen_flow.post_aux_kw
+        p_brake_total_kw = regen_flow.total_kw
         self.state.p_brake_total_kw = p_brake_total_kw
-        self.state.p_brake_regen_kw = p_brake_regen_kw
-        self.state.p_brake_aux_kw = p_brake_aux_kw
-        self.state.p_brake_friction_kw = p_brake_friction_kw
+        self.state.p_brake_aux_kw = regen_flow.aux_kw
+        self.state.p_brake_regen_kw = regen_flow.aux_kw + charge_alloc.from_regen_kw
+        self.state.p_brake_friction_kw = regen_flow.friction_kw
         # Net power after accounting for braking and generic losses
         p_net_kw = p_delivered_kw - p_brake_total_kw - p_loss_kw
         
@@ -242,10 +208,6 @@ class Plant:
             0.0,
             self.plant_config.v_max_mps
         )
-        
-        # Store charging sources for info display (use values calculated above)
-        self.state.p_batt_charge_regen_kw = p_batt_charge_regen_available
-        self.state.p_batt_charge_fc_kw = p_batt_charge_fc_available
         
         # Distance update
         self.state.distance_km += (self.state.speed_mps * dt_seconds) / 1000.0

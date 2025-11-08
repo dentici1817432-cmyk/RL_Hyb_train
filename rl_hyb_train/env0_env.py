@@ -116,8 +116,12 @@ class Env0(gym.Env):
         
         # Initialize renderer if enabled
         if config.renderer.enabled:
-            from .renderer import Renderer
-            self._renderer = Renderer(config.renderer)
+            if config.renderer.use_enhanced_renderer:
+                from .enhanced_renderer import EnhancedRenderer
+                self._renderer = EnhancedRenderer(config.renderer)
+            else:
+                from .renderer import Renderer
+                self._renderer = Renderer(config.renderer)
         else:
             self._renderer = None
         
