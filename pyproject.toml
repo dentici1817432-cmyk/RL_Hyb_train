@@ -1,0 +1,16 @@
+[project]
+name = "rl-hyb-train"
+version = "0.1.0"
+description = "Supervisory EMS (POMDP) for Hybrid FC–Battery Train - RL training environment"
+requires-python = ">=3.11"
+dependencies = [
+    "gymnasium>=1.2.2",
+    "numpy>=2.3.4",
+    "pyyaml>=6.0.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "matplotlib>=3.8.0",
+    "pytest>=7.4.0",
+]
