@@ -727,3 +727,16 @@ class Driver:
             p_req_kw += grade_power_kw
         
         return p_req_kw
+    
+    def set_current_grade(self, grade_percent: float):
+        """Set current grade for plant calculations."""
+        self._current_grade_percent = grade_percent
+    
+    def get_current_grade(self) -> float:
+        """Get current grade from timetable if available."""
+        if (self.use_timetable and 
+            self.timetable and 
+            self.state.current_route_segment_idx < len(self.timetable.route_segments)):
+            segment = self.timetable.route_segments[self.state.current_route_segment_idx]
+            return segment.grade_percent
+        return 0.0  # Default flat

@@ -48,11 +48,13 @@ class Plant:
         plant_config: PlantConfig,
         battery_config: BatteryConfig,
         fc_config: FuelCellConfig,
-        rng: np.random.Generator
+        rng: np.random.Generator,
+        train_config=None
     ):
         self.plant_config = plant_config
         self.battery_config = battery_config
         self.fc_config = fc_config
+        self.train_config = train_config
         self.rng = rng
         self.state = PlantState()
         
@@ -187,7 +189,7 @@ class Plant:
                 self.state.tank_level - delta_m_h2_kg / self.fc_config.tank_capacity_kg,
             )
         
-        # Kinematics (toy model)
+        # Realistic kinematics using Davis resistance and grade forces
         # Delivered traction power accounts for limited supply and unmet demand,
         # and braking power acts against motion (regen + friction).
         p_delivered_kw = self.state.p_delivered_kw
@@ -197,17 +199,61 @@ class Plant:
         self.state.p_brake_aux_kw = regen_flow.aux_kw
         self.state.p_brake_regen_kw = regen_flow.aux_kw + charge_alloc.from_regen_kw
         self.state.p_brake_friction_kw = regen_flow.friction_kw
-        # Net power after accounting for braking and generic losses
-        p_net_kw = p_delivered_kw - p_brake_total_kw - p_loss_kw
         
-        # Speed update: v_{t+1} = clip(v_t + k_v * P_net * dt, 0, v_max)
-        # Note: kinematic_gain is in (m/s)/W, so convert kW to W
-        v_delta = self.plant_config.kinematic_gain_mps_per_watt * p_net_kw * 1000.0 * dt_seconds
-        self.state.speed_mps = np.clip(
-            self.state.speed_mps + v_delta,
-            0.0,
+        # Convert power to force for physics calculations
+        # P = F * v, so F = P / v (handle v=0 case)
+        if self.state.speed_mps > 0.1:  # Avoid division by very small numbers
+            traction_force_n = p_delivered_kw * 1000.0 / self.state.speed_mps
+        elif p_delivered_kw > 0 and self.state.speed_mps <= 0.1:  # Starting from rest
+            traction_force_n = min(p_delivered_kw * 1000.0 / 0.1, 50000.0)  # Max starting force
+        else:
+            traction_force_n = 0.0
+        
+        # Calculate resistance forces (Davis formula)
+        # F_r = A + B*v + C*v^2
+        # Use configured Davis coefficients if available
+        if hasattr(self, 'train_config') and self.train_config:
+            davis_A = self.train_config.davis_A_N
+            davis_B = self.train_config.davis_B_N_per_mps
+            davis_C = self.train_config.davis_C_N_per_mps2
+        else:
+            # Fallback values
+            davis_A = 5000.0  # N
+            davis_B = 100.0   # N/(m/s)
+            davis_C = 5.0     # N/(m/s)^2
+        
+        resistance_force_n = (
+            davis_A + 
+            davis_B * self.state.speed_mps + 
+            davis_C * self.state.speed_mps ** 2
+        )
+        
+        # Calculate grade force
+        # Need grade information - use passed grade if available
+        grade_percent = 0.0  # Default flat
+        if hasattr(self, '_current_grade_percent'):
+            grade_percent = self._current_grade_percent
+        
+        grade_force_n = (
+            self.passenger_mass_tons * 1000.0 * 9.81 * grade_percent / 100.0
+        )
+        
+        # Calculate net force and resulting acceleration
+        # Positive force = acceleration, negative = deceleration
+        net_force_n = traction_force_n - resistance_force_n - grade_force_n
+        
+        # Update velocity using F = ma -> a = F/m
+        mass_kg = self.passenger_mass_tons * 1000.0
+        accel_mps2 = net_force_n / mass_kg
+        
+        # Update speed
+        v_new_mps = np.clip(
+            self.state.speed_mps + accel_mps2 * dt_seconds,
+            0.0,  # Can't go backward
             self.plant_config.v_max_mps
         )
+        
+        self.state.speed_mps = v_new_mps
         
         # Distance update
         self.state.distance_km += (self.state.speed_mps * dt_seconds) / 1000.0
