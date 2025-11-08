@@ -166,10 +166,8 @@ class Driver:
         else:
             self.state.speed_mps = current_speed_mps
 
-        # Choose control mode: timetable vs manual profiles
-        if self.use_timetable:
-            return self._step_timetable(dt, current_speed_mps)
-        elif self.use_speed_profile:
+        # Choose control mode: manual profiles (use existing for now)
+        if self.use_speed_profile:
             if self._speed_schedule_filtered.size > 0:
                 target_speed, schedule_accel, segment_meta = self._sample_speed_schedule(self.state.current_time)
                 planner_accel = self._plan_preview_accel(current_speed_mps, dt, schedule_accel)
@@ -639,12 +637,24 @@ class Driver:
             if distance_to_stop <= 5.0 and abs(current_speed_mps) < 1.0:  # 5m threshold
                 at_stop = True
                 dwell_time = stop.dwell_time_s
-                next_stop_time = self.state.current_time + dwell_time
+                
+                # Check if dwell is completed and advance to next stop
+                if self.state.dwell_end_time > 0 and self.state.current_time >= self.state.dwell_end_time:
+                    # Dwell completed, advance to next stop
+                    self.state.current_stop_idx += 1
+                    self.state.dwell_end_time = 0.0
+                    self.state.is_dwelling = False
+                    
+                if self.state.is_dwelling:  # Still in dwell
+                    next_stop_time = self.state.current_time + (stop.dwell_time_s - (self.state.current_time - self.state.dwell_end_time))
+                else:  # Just arrived
+                    self.state.dwell_end_time = self.state.current_time + dwell_time
+                    next_stop_time = self.state.dwell_end_time
                 
                 # Update next stop info for observation
                 if self.state.current_stop_idx + 1 < len(self.timetable.stops):
                     next_stop = self.timetable.stops[self.state.current_stop_idx + 1]
-                    self.state.next_stop_time = self.state.current_time + (next_stop.position_m - self.state.current_position_m) / 15.0
+                    self.state.next_stop_time = self.state.dwell_end_time + (next_stop.position_m - self.state.current_position_m) / 15.0
                 else:
                     self.state.next_stop_time = float('inf')
         

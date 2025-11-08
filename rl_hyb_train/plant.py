@@ -228,15 +228,10 @@ class Plant:
             davis_C * self.state.speed_mps ** 2
         )
         
-        # Calculate grade force
-        # Need grade information - use passed grade if available
+        # Calculate grade force (simplified for now)
+        # TODO: Add proper grade integration when using timetable driver
         grade_percent = 0.0  # Default flat
-        if hasattr(self, '_current_grade_percent'):
-            grade_percent = self._current_grade_percent
-        
-        grade_force_n = (
-            self.passenger_mass_tons * 1000.0 * 9.81 * grade_percent / 100.0
-        )
+        grade_force_n = 0.0
         
         # Calculate net force and resulting acceleration
         # Positive force = acceleration, negative = deceleration

@@ -35,35 +35,55 @@ train:
 scenario:
   sim:  # Episode timing/random seed
     dt_seconds: 1
-    episode_steps_min: 3600
-    episode_steps_max: 5400
+    episode_steps_min: 1800
+    episode_steps_max: 2400
     seed: 123
-  driver:  # Track/schedule description
-    p_req_smoothing_tau_s: 12.0
-    p_req_rate_limit_kw_per_s: 120.0
-    p_loss_watts: 20000
-    manual_loop: false
-    manual_p_req_profile:
+  route:
+    profiles: ["nil_short_mountain"]
+    grade_segments_percent: [0.009, 0.0238, 0.009, -0.018, -0.018, 0.018]  # ~9‰ avg, ~23.8‰ max
+    segment_duration_s: 2000.0  # ~2km segments  
+    speed_limits_mps: [25.0, 22.22, 22.22, 22.22, 22.22, 22.22]  # 90/60 km/h limits
+  stops:
+    count: 4
+    dwell_mean_s: 120.0
+    dwell_jitter_frac: 0.2
+  driver:  # Driver/ATO parameters  
+    p_req_smoothing_tau_s: 3.0
+    p_req_rate_limit_kw_per_s: 1000.0
+    p_loss_watts: 200000.0
+    manual_speed_profile:
+      - duration_s: 200
+        speed_mps: 0.0
+        label: "Station A"
+        hold: true
       - duration_s: 300
-        p_req_kw: 0.0
+        speed_mps: 20.0
+        label: "Depart A"
+        grade_percent: 0.009
+        p_bias_kw: 50.0
+      - duration_s: 1000
+        speed_mps: 22.22
+        label: "Climb 1"
+        grade_percent: 0.0238
+        p_bias_kw: 100.0
       - duration_s: 600
-        p_req_kw: 80.0
-      - duration_s: 600
-        p_req_kw: 140.0
-      - duration_s: 400
-        p_req_kw: 200.0
+        speed_mps: 22.22
+        label: "Station B"
+        hold: true
       - duration_s: 300
-        p_req_kw: 120.0
-      - duration_s: 600
-        p_req_kw: 60.0
-      - duration_s: 500
-        p_req_kw: -40.0
-      - duration_s: 400
-        p_req_kw: -80.0
-      - duration_s: 600
-        p_req_kw: 50.0
+        speed_mps: 20.0
+        label: "Depart B"
+        grade_percent: 0.009
+        p_bias_kw: 50.0
       - duration_s: 800
-        p_req_kw: 0.0
+        speed_mps: 22.22
+        label: "Climb 2"
+        grade_percent: -0.018
+        p_bias_kw: -20.0
+      - duration_s: 200
+        speed_mps: 0.0
+        label: "Station C"
+        hold: true
     manual_speed_profile:  # Optional speed profile for the driver PID
       - duration_s: 150
         speed_mps: 0.0

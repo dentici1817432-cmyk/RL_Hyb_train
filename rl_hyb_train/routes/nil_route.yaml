@@ -1,0 +1,17 @@
+# NIL Route Configuration - Based on NIL_route.md
+# Simplified version for initial testing
+
+route:
+  profiles: ["nil_short_mountain"]
+  grade_segments_percent: [0.009, 0.0238, 0.009, -0.018, -0.018, 0.018]  # ~9‰ avg, ~23.8‰ max
+  segment_duration_s: 2000.0  # ~2km segments  
+  speed_limits_mps: [25.0, 22.22, 22.22, 22.22, 22.22, 22.22]  # 90/60 km/h limits
+
+stops:
+  count: 7
+  dwell_mean_s: 120.0
+  dwell_jitter_frac: 0.2
+
+# Note: This is a simplified NIL route for testing
+# Full route: 16.5km with 7 stations including terminals
+# Elevation profile shows mountainous terrain with grades up to 23.8‰
