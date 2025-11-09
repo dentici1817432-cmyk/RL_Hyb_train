@@ -46,33 +46,11 @@ Requires Python 3.11+.
   ```
 
 
-## Diagrams
+## Diagram
 
-High-level diagrams are pre-generated under `docs/`. Regenerate via the helper scripts (Graphviz `dot` required):
+The detailed dataflow (EMS + Shield + Plant) for Env0:
 
-```bash
-uv run python scripts/gen_env0_detailed.py
-uv run python scripts/gen_env0_physics.py
-uv run python scripts/gen_env0_diagram.py
-```
-
-Rendered diagrams:
-
-- Detailed dataflow (EMS + Shield + Plant)
-  
-  ![env0_detailed](docs/env0_detailed.png)
-
-- Physics power balance view
-  
-  ![env0_physics](docs/env0_physics.png)
-
-- Simplified overview
-  
-  ![env0_diagram](docs/env0_diagram.png)
-
-- Example renderer snapshot
-  
-  ![env0_render](env0_render.png)
+![env0_detailed](docs/env0_detailed.png)
 
 
 ## Project Structure
@@ -111,9 +89,37 @@ See `env0.md` and `spec.md` for full details on spaces, physics, and rewards.
 - Select via your own training loop or instantiate EMS classes directly
 
 
-## Reproducing Example Plots
+## Scenario Examples (tests)
 
-The repo includes several test harness scripts that generate PNGs for different scenarios (steady cruise, ramps, braking). Open the `test_ems_*.py` files to see usage patterns and power flow plots.
+Illustrative outputs from the included test harnesses. Each figure shows driver demand, FC/Battery allocations, unmet demand, and store levels.
+
+- Steady cruise — constant speed and demand; EMS maintains SOC and moderates FC usage.
+
+  ![steady_cruise](test_ems_steady_cruise.png)
+
+- Ramp profile — rising traction demand; highlights FC ramping and battery support during transients.
+
+  ![ramp_profile](test_ems_ramp_profile.png)
+
+- NIL-like profile — varied suburban schedule; mixed climbs and dwells.
+
+  ![nil_like](test_ems_nil_like_profile.png)
+
+- Emergency braking — negative P_req with regen; shows regen capture vs friction braking.
+
+  ![emergency_braking](test_ems_emergency_braking.png)
+
+- Regen profile — focused braking segment; tests charge acceptance and SOC corridor.
+
+  ![regen_profile](test_ems_regen_profile.png)
+
+- Step changes — abrupt demand steps; examines FC ramp limit and battery buffering.
+
+  ![step_changes](test_ems_step_changes.png)
+
+- High SOC regen — limited charge headroom; demonstrates regen clipping at high SOC.
+
+  ![high_soc_regen](test_ems_high_soc_regen.png)
 
 
 ## Contributing
@@ -127,4 +133,3 @@ The repo includes several test harness scripts that generate PNGs for different 
 
 - Built for research and teaching on hybrid energy management.
 - Uses Gymnasium, NumPy, matplotlib, and optional SB3 for RL baselines.
-
