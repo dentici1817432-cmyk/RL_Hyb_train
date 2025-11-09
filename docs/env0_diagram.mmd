@@ -1,0 +1,54 @@
+flowchart TD
+    subgraph Agent ["Agent (External RL Policy)"]
+        A["(obs<br/>12D normalized<br/>vector)"]
+        E["Agent<br/>Input: obs<br/>Output: action<br/><br/>action = (fc_frac: 0-1,<br/>batt_cmd: -1 to 1)"]
+    end
+
+    subgraph Shield ["Shield (Safety Constraints)"]
+        F["Shield.apply<br/><br/>p_fc_cmd = fc_frac * P_fc_max (100.0 kW)<br/>p_batt_cmd = batt_cmd * (P_chg_max if <0 else P_dis_max)<br/>(P_chg_max=1000.0 kW, P_dis_max=3000.0 kW)<br/><br/>FC Ramp: |Δp_fc| ≤ ramp_rate * dt (40.0 kW/s)<br/>p_fc = clip(p_fc_cmd, 0, P_fc_max)<br/>If tank ≤ tank_hard_min (0.02): p_fc = 0<br/><br/>SOC Corridor (enforce):<br/>If SOC < soc_soft_min (0.2):<br/>  - Block discharge (p_batt ≥0 → 0)<br/>  - If very low: force charge (-0.3*P_chg_max)<br/>If SOC > soc_soft_max (0.9):<br/>  - Block charge (p_batt <0 → 0)<br/>  - Limit discharge to 0.5*P_dis_max<br/>Hard: If SOC ≤ soc_hard_min (0.15): only charge/zero<br/>If SOC ≥ soc_hard_max (1.00): only discharge/zero<br/><br/>C-rate Caps (enforce):<br/>clip(p_batt, -P_chg_max, P_dis_max)<br/><br/>Output: ShieldedAction<br/>(p_fc_kw, p_batt_kw, violations,<br/>soc_low/high, fc_ramp_limited,<br/>crate_capped, regen_clipped)"]
+    end
+
+    subgraph Plant ["Plant Dynamics"]
+        G["Plant.step<br/><br/>aux_bias += N(0, aux_sigma) (0.0 kW)<br/>p_aux = p_aux_base (60.0 kW) + aux_bias<br/>p_dem = p_req + p_aux<br/>p_loss = 200.0 kW (fixed)<br/><br/>%% Battery Flow<br/>dis_kw = max(p_batt, 0)<br/>chg_kw = max(-p_batt, 0)<br/>delivered = dis_kw * η_dis (0.94)<br/><br/>%% Regen Flow (if p_req <0 & speed >0.01 m/s)<br/>regen_total = |p_req|<br/>regen_aux = min(regen_total, p_aux)<br/>post_aux = max(0, regen_total - regen_aux)<br/>capture = min(chg_cmd, post_aux)<br/>friction = max(0, regen_total - regen_aux - capture)<br/>p_brake_total = regen_total<br/>p_brake_aux = regen_aux<br/>p_brake_regen = regen_aux + capture<br/>p_brake_friction = friction<br/>p_regen_post_aux = post_aux<br/><br/>%% FC Excess for charging<br/>fc_excess = max(0, p_fc - p_dem)<br/>chg_from_regen = min(chg_cmd, post_aux)<br/>chg_from_fc = min(max(0, fc_excess), chg_cmd - chg_from_regen)<br/>actual_chg = chg_from_regen + chg_from_fc<br/>p_batt_actual = -actual_chg if chg else p_batt<br/>p_batt_chg_regen = chg_from_regen<br/>p_batt_chg_fc = chg_from_fc<br/>p_batt_dis = max(p_batt_actual, 0)<br/>p_batt_chg = max(-p_batt_actual, 0)<br/>p_batt_delivered = p_batt_dis * η_dis<br/><br/>%% Power Balance<br/>p_supply = p_fc + p_batt_delivered<br/>residual = p_dem - p_supply<br/>p_unmet = max(residual, 0)<br/>p_delivered = p_supply - p_aux - p_unmet<br/><br/>%% Energy Updates<br/>ΔSOC = -p_batt_dis / (E_batt * η_dis) * dt_h<br/>     + p_batt_chg * η_chg / E_batt * dt_h<br/>     (E_batt=200.0 kWh, η_chg=0.95, dt_h=0.0002777777777777778)<br/>SOC = clip(SOC + ΔSOC, 0, 1)<br/><br/>Δm_H2 = (p_fc * dt_h) / (η_fc * LHV)<br/>       (η_fc=0.5, LHV=33.3 kWh/kg)<br/>If Δm_H2 >0: tank = max(0, tank - Δm_H2 / tank_cap (50.0 kg))<br/><br/>%% Kinematics (if speed ≥0.01 m/s & p_req >0)<br/>If stopped (speed<0.01 & p_req≤0): speed=0, no distance update<br/>Else:<br/>  If speed>0.1: F_traction = p_delivered *1000 / speed<br/>  Else if p_delivered>0: F_traction = min(p_delivered*1000/0.1, 50000 N)<br/>  Else: F_traction=0<br/><br/>  %% Davis Resistance<br/>  F_resist = A + B*speed + C*speed²<br/>             (A=5000.0 N, B=100.0 N/(m/s), C=5.0 N/(m/s)²)<br/><br/>  %% Grade Force (from driver)<br/>  F_grade = mass * g * grade/100<br/>            (mass ~U[180.0,260.0] tons, g=9.81 m/s²)<br/><br/>  net_F = F_traction - F_resist - F_grade<br/>  a = net_F / (mass *1000)<br/>  speed_new = clip(speed + a*dt, 0, v_max (50.0 m/s))<br/>  distance += speed * dt /1000 (km)<br/>  If dwelling: speed=0<br/><br/>Output: PlantState (SOC, tank, speed, p_fc/batt/unmet/dem/supply/delivered/loss,<br/>p_batt_chg/disch/reg/del, p_regen_post_aux, p_brake_*)"]
+    end
+
+    subgraph Driver ["Driver (Traction Demand)"]
+        B["Driver.step(dt=1s, current_speed)<br/><br/>%% Schedule (manual_speed_profile from conf)<br/>%% Segments: dwell/accel/cruise/climb/descend/stop<br/>%% e.g., Station A (0 m/s, 200s), Depart (20 m/s, 300s, grade=0.9%), etc.<br/>%% Interpolation: linear or hold<br/>%% Loop: false (one episode)<br/><br/>%% Target Speed from Profile<br/>v_target = interpolate(segment, time)<br/>v_smoothed = lowpass(v_target, tau=14.0s)<br/>is_dwell = v_target ≤0.4 m/s or segment.dwell<br/>next_stop_time = dwell_end or phase-based fallback<br/>grade = segment.grade_percent (e.g., 0.009 to 0.0238 %)<br/><br/>%% Speed Tracking (PID enabled)<br/>error = v_smoothed - speed_filtered (tau_meas=5.0s)<br/>If |error| ≤ deadband (0.2 m/s): error=0<br/>If |error| < sep (0.6 m/s): no integral<br/>If dwelling/saturated: no integral (anti-windup)<br/>integral = clip(integral + error*dt, ±0.6 m/s)<br/>deriv = filter((error - prev_error)/dt, tau_d=1.5s)<br/>a_pid = Kp*error + Ki*integral + Kd*deriv<br/>       (Kp=0.004, Ki=0.04, Kd=0.03)<br/><br/>%% Constraints<br/>a_cmd = clip(a_pid + a_profile, -brake_lim (-0.25 m/s²), accel_lim (0.2 m/s²))<br/>If jerk_lim (0.1 m/s³): a_cmd = clip(a_cmd, prev_a ± jerk*dt)<br/>If planner_enable: preview over horizon (14.0s) with penalties<br/>  (penalty_accel=0.15, penalty_jerk=0.05; min_h=6.0s)<br/><br/>%% Power from Accel<br/>p_net = a_cmd / (kinematic_gain *1000) (gain=1e-06 m/s/W)<br/>p_req_raw = p_loss (200.0 kW) + p_net + segment.p_bias (e.g., 50-100 kW)<br/>clip(p_req_raw, -clip_kw (-500.0 kW), clip_kw (500.0 kW))<br/><br/>%% Rate Limit & Filter<br/>dp_max = rate_lim * dt (1000.0 kW/s)<br/>p_req = clip(p_req_raw, prev ± dp_max)<br/>alpha = dt/(tau_smoothing + dt) (tau=3.0s → α=0.25)<br/>p_req_filtered = α*p_req + (1-α)*prev_filtered<br/><br/>Output: p_req_filtered (to plant & obs),<br/>target_speed, is_dwelling, grade, next_stop_time"]
+    end
+
+    subgraph Observation ["Observation Builder"]
+        D["_get_observation<br/><br/>obs = zeros(12, float32); clip([-1,1])<br/><br/>obs[0] = clip((speed / v_max)*2 -1, [-1,1]) (v_max=50.0 m/s)<br/>obs[1] = (clip(SOC + N(0,σ_soc), [0,1])*2 -1) (σ_soc=0.02)<br/>obs[2] = (clip(tank + N(0,σ_tank), [0,1])*2 -1) (σ_tank=0.02)<br/>obs[3] = if next_stop_time finite:<br/>           clip((next_stop_time / 600s)*2 -1, [-1,1])  // ~10 min max<br/>         else: (step / episode_len)*2 -1  // phase [0,1]→[-1,1]<br/>obs[4] = clip((grade / 5%)*2 -1, [-1,1])  // grades ±5%<br/>obs[5] = clip((p_req_filtered / p_req_max)*2 -1, [-1,1]) (max=2000.0 kW)<br/>obs[6] = clip( (p_req_filt - prev_filt)/dt / 1000kW/s *2 -1, [-1,1] )  // trend, max 1000 kW/s<br/>obs[7] = last_fc_frac *2 -1  // [0,1]→[-1,1]<br/>obs[8] = last_batt_cmd  // already [-1,1]<br/>obs[9:12] = N(0, σ_nuisance=0.1)  // 3 noise channels<br/><br/>Return: obs.astype(float32)"]
+    end
+
+    subgraph Reward ["Reward Calculator"]
+        H["_compute_reward<br/><br/>dt_h = dt_s /3600 (0.0002777777777777778 h)<br/><br/>%% H2 Cost<br/>if p_fc >0:<br/>  Δm_H2 = (p_fc * dt_h) / (η_fc * LHV)  // kg<br/>cost_h2 = c_h2 * Δm_H2 (6.0 €/kg)<br/>else: cost_h2=0, Δm_H2=0<br/><br/>%% Grid Cost (net charging only)<br/>p_chg = max(-p_batt_shielded, 0)<br/>ΔE_chg = p_chg * dt_h * η_chg  // kWh<br/>cost_grid = c_grid * ΔE_chg (0.18 €/kWh)<br/><br/>%% Smoothness<br/>action_diff = ||action - last_action||_2<br/>penalty_smooth = λ_smooth * action_diff (0.01)<br/><br/>%% Delay (cumulative, renderer-enabled)<br/>delay_s = cumulative_delay (from speed_error vs target)<br/>penalty_delay = λ_delay * delay_s * dt_s (0.5)<br/><br/>%% Unmet<br/>penalty_unmet = λ_unmet * p_unmet (1e-06)<br/><br/>reward = -(cost_h2 + cost_grid + penalty_smooth + penalty_delay) - penalty_unmet<br/>%% Negative costs; higher better<br/><br/>%% Episode totals += this step<br/>violations += shielded.violations<br/><br/>Return: float(reward)"]
+    end
+
+    %% Main Flow
+    Reset["Start Episode<br/>(Reset)"] --> DriverInit["Driver.reset<br/>Randomize: mass U[180.0,260.0]t,<br/>SOC U[0.45,0.45], tank U[0.7,1.0],<br/>len U[1800,2400] steps"] --> PlantInit["Plant.reset<br/>state = (SOC, tank=1.0, speed=0,<br/>p_fc/batt/unmet=0, dist=0,...)"]
+    PlantInit --> B
+    B -.->|"p_req_next (precompute)"| G
+    B -.->|"grade, next_stop_time, is_dwell"| D
+    G -.->|"state (SOC,tank,speed,...)"| D
+    G -.->|"p_unmet, Δm_H2, p_chg"| H
+    E -.->|"last_action"| D
+    A --> E
+    E --> F
+    F -.->|"p_fc/batt_shielded, violations"| G
+    F -.->|"violations"| H
+    G --> H
+    H --> Check["Check Termination<br/>terminated = SOC ≤0.15 or tank ≤0.02<br/>step +=1; truncated = step ≥ len<br/>If dwell: speed=0"]
+    Check -->|Continue| D
+    Check -->|End| End["Episode End<br/>Info: totals (reward, costs,<br/>violations, dist_km)<br/>Optional Render<br/>(power flows, SOC/tank,<br/>delays, schedule)"]
+    End -.->|"Reset"| Reset
+
+    style Reset fill:#e1f5fe
+    style Check fill:#fff3e0
+    style End fill:#f3e5f5
+    style E fill:#e8f5e8
+    style Agent fill:#e3f2fd
+    style Shield fill:#f3e5f5
+    style Plant fill:#e8f5e8
+    style Driver fill:#fff3e0
+    style Observation fill:#f1f8e9
+    style Reward fill:#fce4ec

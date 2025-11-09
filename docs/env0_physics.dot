@@ -1,0 +1,57 @@
+digraph PhysicsSim {
+    rankdir=TB;
+    node [shape=box, style=filled, fontsize=10, fontname="Arial"];
+    edge [fontsize=9, fontname="Arial"];
+
+    // Main blocks
+    Driver [label="Driver (Traction Demand)\nSpeed Profile & PID Controller\n\nTarget v from segments (dwell/accel/cruise/climb)\nPID: a = 0.004*e + 0.04*int + 0.03*d\nAccel limits: +0.2 / -0.25 m/s²\nP_req_raw = p_loss (200.0 kW) + (a / 1e-06 m/s/W) + bias\nFilter: α=0.25 (τ=3.0 s)\nRate limit: 1000.0 kW/s\nOutput: p_req_kw", fillcolor=lightblue];
+
+    Shield [label="Shield (Action Constraints)\nSafety Enforcement\n\nInput: fc_frac (0-1), batt_cmd (-1 to 1)\np_fc = fc_frac * 100.0 kW; clip [0, 100.0]\nRamp: |Δp_fc| ≤ 40.0 kW/s\nIf tank ≤ 0.02: p_fc = 0\n\nSOC Corridor (0.2-0.9):\nLow SOC: block discharge, force charge if <0.2-0.05\nHigh SOC: block charge, limit dis to 0.5*3000.0 kW\nC-rate: clip p_batt [-1000.0, 3000.0] kW\nOutput: p_fc_kw, p_batt_kw, violations", fillcolor=lightcoral];
+
+    subgraph cluster_Plant {
+        label="Plant (Physical Dynamics)";
+        style=filled;
+        color=lightgreen;
+
+        Aux [label="Aux Load Generator\np_aux = 60.0 kW + N(0, 0.0)\nRandom walk bias", fillcolor=yellow, shape=ellipse];
+
+        Regen [label="Regen Allocator\nif p_req < 0 & v > 0.01 m/s:\n  regen_total = |p_req|\n  regen_aux = min(regen_total, p_aux)\n  post_aux = max(0, regen_total - regen_aux)\n  capture = min(chg_cmd, post_aux)\n  friction = max(0, regen_total - regen_aux - capture)\n  p_brake_regen = regen_aux + capture", fillcolor=orange];
+
+        Balance [label="Power Balance Sum\np_dem = p_req + p_aux\np_supply = p_fc + (p_batt_dis * 0.94)\np_unmet = max(p_dem - p_supply, 0)\np_delivered = p_supply - p_aux - p_unmet\nFC excess = max(0, p_fc - p_dem) for chg", fillcolor=pink, shape=circle];
+
+        SOC [label="SOC Integrator (Coulomb Counting)\nΔSOC = (-p_dis / (200.0 * 0.94) + p_chg * 0.95 / 200.0) * dt_h\n(dt_h = 1/3600 h, clip [0,1])", fillcolor=lightyellow, shape=doublecircle];
+
+        H2 [label="H2 Tank Integrator\nIf p_fc > 0:\n  Δm_H2 = p_fc * dt_h / (0.5 * 33.3)\n  tank -= Δm_H2 / 50.0\n(max(0, tank); LHV=33.3 kWh/kg)", fillcolor=lightyellow, shape=doublecircle];
+
+        Kinematics [label="Kinematics (Davis + Grade)\nIf v < 0.01 & p_req ≤ 0:\n  v = 0\nElse:\n  F_traction = p_delivered * 1000 / v (or max at start)\n  F_resist = 5000.0 + 100.0*v + 5.0*v²\n  F_grade = mass * 9.81 * grade / 100\n  F_net = F_traction - F_resist - F_grade\na = F_net / (mass * 1000)\nv_new = clip(v + a*dt, 0, 50.0) m/s\ndist += v*dt / 1000 km\nIf dwell: v=0", fillcolor=lightgreen];
+    }
+
+    // Physics flows
+    Driver -> Aux [label="p_req_kw"];
+    Driver -> Kinematics [label="target_v (profile)"];
+    Aux -> Balance [label="p_aux"];
+    Kinematics -> Driver [label="v_mps (feedback)"];
+    Kinematics -> Aux [label="v for bias?"];  // Optional
+
+    // Assume external action to Shield
+    Shield -> Balance [label="p_fc_kw, p_batt_kw"];
+
+    // Plant internals
+    Aux -> Regen [label="p_aux"];
+    Driver -> Regen [label="p_req (for braking)"];
+    Kinematics -> Regen [label="v_mps"];
+    Regen -> Balance [label="p_brake_regen, friction"];
+    Shield -> Regen [label="chg_cmd from p_batt"];
+    Balance -> SOC [label="p_batt_dis, p_chg"];
+    Balance -> H2 [label="p_fc"];
+    Balance -> Kinematics [label="p_delivered"];
+    Kinematics -> Balance [label="v for traction calc"];
+
+    // Outputs
+    Plant -> Outputs [label="SOC, tank, v, dist, p_unmet"];
+    Outputs [label="Physics Outputs\n(SOC, H2 level, speed, distance, unmet power)", fillcolor=lightgray, shape=plaintext];
+
+    // Shield inputs (external)
+    External_Action [label="External Action\n(fc_frac, batt_cmd)", fillcolor=lightyellow, shape=plaintext];
+    External_Action -> Shield [label="action"];
+}

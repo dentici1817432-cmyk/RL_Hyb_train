@@ -1,0 +1,42 @@
+digraph Env0 {
+    rankdir=TB;  // Top to bottom layout like Simulink
+    node [shape=box, style=filled, fontsize=10, fontname="Arial"];
+    edge [fontsize=9, fontname="Arial"];
+
+    // Main blocks
+    Reset [label="Reset\nRandomize: mass U[180.0-260.0]t\nSOC U[0.45-0.45]\ntank U[0.7-1.0]\nlen U[1800-2400] steps", fillcolor=lightgray];
+
+    Driver [label="Driver Block\nTraction Demand Generation\n\nTarget v from profile (segments: dwell/accel/cruise)\nPID: a = 0.004*e + 0.04*int + 0.03*d\nConstraints: accel ±0.20/-0.25 m/s², jerk 0.10 m/s³\nP_req = loss (200.0 kW) + (a / gain) + bias\nFilter: α=0.25 (τ=3.0s)\nRate: 1000 kW/s\nOutput: p_req_filtered", fillcolor=lightblue];
+
+    Plant [label="Plant Dynamics (Integrator)\n\nAux: p_aux = 60.0 kW + N(0,0.0)\nDemand: p_dem = p_req + p_aux\n\nPower Balance: p_supply = p_fc + p_batt * 0.94\np_unmet = max(p_dem - p_supply, 0)\np_delivered = p_supply - p_aux - p_unmet\n\nSOC Integrator: ΔSOC = -dis / (200.0 * 0.94) * dt_h + chg * 0.95 / 200.0 * dt_h\nH2 Tank: Δm = p_fc * dt_h / (0.5 * 33.3) ; tank -= Δm / 50.0 kg\nKinematics: F_net = F_traction - F_davis - F_grade\na = F_net / mass; v += a * dt (clip 0-50.0 m/s)\ndist += v * dt / 1000 km", fillcolor=lightgreen, shape=rectangle];
+
+    Shield [label="Shield (Constraint Block)\nSafety Enforcement\n\np_fc = clip(fc_frac * 100.0, 0, 100.0)\nRamp: |Δp_fc| ≤ 40.0 kW/s\nIf tank ≤ 0.02: p_fc = 0\n\nSOC Corridor (0.2-0.9):\nLow: block dis, force chg if very low\nHigh: block chg, limit dis to 0.5*3000.0 kW\nHard: SOC ≤0.15: only chg/0; ≥1.00: only dis/0\nC-rate: clip p_batt [-1000.0, 3000.0] kW\nOutput: p_fc/batt_shielded, violations", fillcolor=lightcoral];
+
+    Agent [label="Agent (EMS Policy)\nExternal RL\nInput: obs (12D [-1,1])\nOutput: action = [fc_frac (0-1), batt_cmd (-1 to 1)]", fillcolor=lightyellow];
+
+    Obs [label="Observation Builder\n12D Vector (Box -1 to 1)\n\nobs[0]: (v / 50.0)*2-1\nobs[1]: noisy SOC (σ=0.02) *2-1\nobs[2]: noisy tank (σ=0.02) *2-1\nobs[3]: time-to-stop /600s *2-1 or phase\nobs[4]: grade /5% *2-1 (±5% norm)\nobs[5]: p_req_filt / 2000.0 kW *2-1\nobs[6]: trend (Δp_req/dt /1000 kW/s)*2-1\nobs[7]: last_fc *2-1\nobs[8]: last_batt (-1 to 1)\nobs[9-11]: N(0, 0.1) noise", fillcolor=lightpink];
+
+    Reward [label="Reward Calculator\nNegative Costs\n\nH2: 6.0 €/kg * Δm_H2 (if p_fc>0)\nGrid: 0.18 €/kWh * p_chg * dt_h * 0.95 (chg only)\nSmooth: 0.01 * ||action - last||_2\nDelay: 0.5 * delay_s * dt (0.5)\nUnmet: 1e-06 * p_unmet\nr = -(h2 + grid + smooth + delay) - unmet\nHigher better (min cost)", fillcolor=lightcyan];
+
+    Term [label="Termination Check\nterminated: SOC ≤0.15 or tank ≤0.02\ntruncated: step ≥ len\nIf dwell: v=0", fillcolor=lightgray, shape=diamond];
+
+    // Flows (signals)
+    Reset -> Driver [label="init episode"];
+    Driver -> Plant [label="p_req_kw (filtered)"];
+    Driver -> Obs [label="grade, next_stop, dwell"];
+    Plant -> Obs [label="state (SOC, tank, v, ...)"];
+    Plant -> Reward [label="p_unmet, Δm_H2, p_chg"];
+    Obs -> Agent [label="obs (12D)"];
+    Agent -> Shield [label="action [fc_frac, batt_cmd]"];
+    Shield -> Plant [label="p_fc/batt_shielded"];
+    Shield -> Reward [label="violations"];
+    Plant -> Term [label="state update"];
+    Term -> Obs [label="next obs (loop)"];
+    Term -> Reset [label="end episode (info totals)" labeldistance=2];
+    Agent -> Obs [label="last_action (feedback)"];
+
+    // Colors and layout
+    {"rank=same; Obs Agent Shield"}
+    {"rank=same; Driver Plant"}
+    {"rank=same; Reward Term"}
+}

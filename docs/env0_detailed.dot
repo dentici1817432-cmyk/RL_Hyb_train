@@ -1,0 +1,101 @@
+digraph DetailedEnv0 {
+    rankdir=LR;
+    node [shape=box, style=filled, fontsize=10, fontname="Arial"];
+    edge [fontsize=9, fontname="Arial"];
+    graph [compound=true, newrank=true, splines=ortho, ranksep=1.0, nodesep=0.6, concentrate=true];
+    edge [arrowsize=0.8, penwidth=1.3, color="#333333"];
+    node [margin="0.08,0.06"];
+
+    Driver [label="Driver (Traction Demand)\n\nSpeed Profile: segments (dwell/accel/cruise/climb)\nPID Controller for v_tracking\nP_req = loss + (a / 1e-06 m/s/W) + bias\nLow-pass filter (τ=3.0 s, α≈0.25)\nRate limit: 1000 kW/s\n\nOutput: P_req kW", fillcolor=lightblue];
+
+    subgraph cluster_EMS {
+        label="EMS (Energy Management System)";
+        style=filled; color=lightyellow;
+
+        Policy [label="Policy (External)\n\nInput: P_req, SOC, tank, v\nOutput: fc_frac (0-1), batt_cmd (-1 to 1)\n(e.g., RL policy or rule-based)", fillcolor=lightyellow, shape=rectangle];
+
+        subgraph cluster_Shield {
+            label="Shield (Constraints)";
+            style=filled; color=lightcoral;
+
+            Ramp [label="FC Ramp Limiter\n|Δp_fc| ≤ 40.0 kW/s\np_fc_cmd = fc_frac * 100.0 kW\nclip p_fc [0, 100.0] kW\nIf tank ≤ 0.02: p_fc = 0", fillcolor=lightcoral];
+
+            SOC_Guard [label="SOC Guard (Corridor 0.2-0.9)\nLow: if SOC < 0.2: block dis, force chg\nHigh: if SOC > 0.9: block chg, limit dis 0.5*3000.0 kW\nHard min 0.15: only chg/0\nHard max 1.00: only dis/0", fillcolor=lightcoral];
+
+            Crate [label="C-rate Limiter\nclip p_batt [-1000.0, 3000.0] kW\nP_chg_max = 1000.0 kW\nP_dis_max = 3000.0 kW", fillcolor=lightcoral];
+
+            Tank_Check [label="Tank Check\nIf tank_level ≤ 0.02: p_fc = 0\nNo H2: disable FC", fillcolor=lightcoral];
+        }
+
+        // Shield internal flows
+        Policy -> Ramp [xlabel="fc_frac"];
+        Policy -> SOC_Guard [xlabel="batt_cmd"];
+        Policy -> Crate [xlabel="batt_cmd"];
+        Policy -> Tank_Check [xlabel="fc_frac"];
+        Ramp -> Output_Shield [xlabel="p_fc (ramped)"];
+        SOC_Guard -> Output_Shield [xlabel="p_batt (SOC-safe)"];
+        Crate -> Output_Shield [xlabel="p_batt (C-rate)"];
+        Tank_Check -> Output_Shield [xlabel="p_fc (tank-safe)"];
+        Output_Shield [label="Shield Output\np_fc_kw, p_batt_kw, violations", fillcolor=lightyellow, shape=plaintext];
+    }
+
+    subgraph cluster_Plant {
+        label="Train Model Dynamics (Plant)";
+        style=filled; color=lightgreen;
+
+        Aux [label="Aux Load Generator\np_aux = 60.0 kW + N(0, 0.0)\nRandom walk bias (hidden)", fillcolor=yellow, shape=ellipse];
+
+        Regen [label="Regen Allocator\n(if P_req <0 & v >0.01 m/s)\nregen_total = |P_req|\nregen_aux = min(total, p_aux)\npost_aux = max(0, total - aux)\ncapture = min(chg_cmd, post_aux)\nfriction = max(0, total - aux - capture)\np_brake_regen = aux + capture", fillcolor=orange];
+
+        Balance [label="Power Balance\nDC demand/supply accounting\n\np_dem = P_req + p_aux\n(p_req includes traction sign)\n\np_supply = p_fc + (p_batt_dis * 0.94)\n\np_unmet = max(p_dem - p_supply, 0)\n\np_delivered = p_supply - p_aux - p_unmet\n\nFC excess → charge (if room)\nExpose: p_batt_dis, p_chg, p_delivered", fillcolor=pink, shape=circle];
+
+        SOC [label="SOC Integrator\n(Coulomb Counting)\nΔSOC = -p_dis / (200.0 * 0.94) * dt_h\n     + p_chg * 0.95 / 200.0 * dt_h\n(dt_h = 1/3600; clip [0,1])", fillcolor=lightyellow, shape=doublecircle];
+
+        H2 [label="H2 Tank Integrator\nIf p_fc >0:\nΔm_H2 = p_fc * dt_h / (0.5 * 33.3) kg\ntank -= Δm_H2 / 50.0 kg\n(max(0, tank); LHV=33.3 kWh/kg)", fillcolor=lightyellow, shape=doublecircle];
+
+        Kinematics [label="Kinematics (Davis + Grade)\np_delivered = p_fc + (p_batt * 0.94) - p_aux\np_unmet = max((P_req + p_aux) - (p_fc + p_batt*0.94), 0)\n\nIf stopped (v<0.01 & P_req≤0): v=0\nElse:\nF_traction = p_delivered *1000 / v (or max start)\nF_resist = 5000.0 + 100.0*v + 5.0*v²\nF_grade = mass * 9.81 * grade/100\n(mass U[180.0-260.0] t)\nF_net = traction - resist - grade\na = F_net / (mass*1000)\nv_new = clip(v + a*dt, 0, 50.0) m/s\ndist += v*dt /1000 km\nIf dwell: v=0", fillcolor=lightgreen];
+        { rank=same; SOC; H2; }
+    }
+
+    Outputs [label="Physics Outputs\n- SOC (0-1)\n- H2 tank level (0-1)\n- Speed (m/s)\n- Distance (km)\n- p_unmet (kW)\n- Violations", fillcolor=lightgray, shape=plaintext];
+
+    // Main flows (forward)
+    Driver -> Policy [xlabel="P_req kW
+(target profile)", minlen=2, color="#7f7f7f", style=dashed];
+    // Route shielded powers through Power Balance
+    Output_Shield -> Balance [xlabel="p_fc_kw, p_batt_kw"];
+    Balance -> SOC [xlabel="p_batt_dis, p_chg", color="#1f77b4"];
+    Balance -> H2 [xlabel="p_fc", color="#1f77b4"];
+    Balance -> Kinematics [xlabel="p_delivered", minlen=2, color="#1f77b4"];
+    SOC -> Outputs [xlabel="SOC", color="#7f7f7f"];
+    H2 -> Outputs [xlabel="tank", color="#7f7f7f"];
+    Kinematics -> Outputs [xlabel="v, dist, p_unmet", color="#7f7f7f"];
+
+    // Feedback loops (dashed, red; non-constraining)
+    Kinematics -> Driver [xlabel="speed_mps
+(feedback)", color=red, style=dashed, penwidth=2, constraint=false];
+    SOC -> Policy [xlabel="SOC
+(feedback)", color=red, style=dashed, penwidth=2, constraint=false];
+    H2 -> Policy [xlabel="tank_level
+(feedback)", color=red, style=dashed, penwidth=2, constraint=false];
+    Kinematics -> Policy [xlabel="speed_mps
+(feedback)", color=red, style=dashed, penwidth=2, constraint=false];
+
+    // Plant internal flows (forward)
+    Driver -> Kinematics [xlabel="P_req kW
+(requested traction)", minlen=2, color="#7f7f7f", style=dashed];
+    // Inputs to Power Balance
+    Driver -> Balance [xlabel="P_req kW", color="#7f7f7f", style=dashed];
+    Aux -> Balance [xlabel="p_aux", color="#1f77b4"];
+    Aux -> Regen [xlabel="p_aux", color="#1f77b4"];
+    Driver -> Regen [xlabel="P_req (for braking)", color="#7f7f7f", style=dashed];
+    Kinematics -> Regen [xlabel="v_mps", color=red, style=dashed, penwidth=2, constraint=false];
+    Output_Shield -> Regen [xlabel="chg_cmd from p_batt", color="#7f7f7f", style=dashed];
+    Regen -> Balance [xlabel="p_brake_regen, friction", color="#1f77b4"];
+
+    // Loop back
+    Outputs -> Loop [xlabel="use in next step
+(loop)", color=red, style=dashed, penwidth=2, constraint=false];
+    Loop [label="Time Step
+dt=1 s", fillcolor=lightgray, shape=circle];
+}

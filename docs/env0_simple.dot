@@ -1,0 +1,23 @@
+digraph SimpleEnv0 {
+    rankdir=LR;  // Left to right flow
+    node [shape=box, style=filled, fontsize=12, fontname="Arial", width=2, height=1];
+    edge [fontsize=10, fontname="Arial"];
+
+    Driver [label="Driver (Traction Demand)\n\nSpeed Profile: segments (dwell/accel/cruise)\nPID Controller for v_tracking\nP_req = loss + (a / 1e-06 m/s/W) + bias\nLow-pass filter (τ=3.0 s, α≈0.25)\nRate limit: 1000 kW/s\n\nOutput: P_req kW", fillcolor=lightblue];
+
+    EMS [label="EMS Policy + Shield\n(External RL or Rule-based)\n\nInput: P_req, SOC, tank\nPolicy: fc_frac (0-1), batt_cmd (-1 to 1)\nShield: p_fc = fc_frac * 100.0 kW (ramp 40 kW/s)\np_batt = batt_cmd * 3000.0 kW (C-rate ±)\nSOC corridor: 0.20-0.90 (block chg/dis)\nOutput: p_fc_kw, p_batt_kw (shielded)", fillcolor=lightyellow];
+
+    Plant [label="Train Model Dynamics (Plant)\n\nAux Load: p_aux = 60.0 kW + noise\nDemand: p_dem = P_req + p_aux\nRegen: if P_req<0, alloc aux then batt (η implied)\nBalance: p_supply = p_fc + p_batt * 0.94\np_unmet = max(p_dem - p_supply, 0)\n\nSOC: ΔSOC = -dis / (200.0 * 0.94) * dt + chg * 0.95 / 200.0 * dt\nH2: Δm = p_fc / (0.5 * 33.3); tank -= Δm / cap\nKinematics: F_net = (p_deliv*1000/v) - ( 5000.0 + 100.0v + 5.0v² ) - grade*m*g\nv += (F_net / mass) * dt (clip 0-50.0 m/s)\ndist += v * dt /1000 km", fillcolor=lightgreen];
+
+    Outputs [label="Simulation Outputs\n- SOC (0-1)\n- H2 tank level (0-1)\n- Speed (m/s)\n- Distance (km)\n- p_unmet (kW)\n- Violations", fillcolor=lightgray, shape=plaintext];
+
+    // Simple flow
+    Driver -> EMS [label="P_req kW\n(target profile)"];
+    EMS -> Plant [label="p_fc_kw, p_batt_kw\n(shielded powers)"];
+    Plant -> Driver [label="speed_mps\n(feedback)"];
+    Plant -> Outputs [label="state: SOC, tank, v, dist, unmet"];
+
+    // Loop back
+    Outputs -> Loop [label="use in next step\n(loop)"];
+    Loop [label="Time Step\ndt=1 s", fillcolor=lightgray, shape=circle];
+}

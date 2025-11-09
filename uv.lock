@@ -1130,6 +1130,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "cvxpy" },
     { name = "gymnasium" },
+    { name = "matplotlib" },
     { name = "numpy" },
     { name = "pyyaml" },
     { name = "stable-baselines3" },
@@ -1145,6 +1146,7 @@ dev = [
 requires-dist = [
     { name = "cvxpy", specifier = ">=1.7.3" },
     { name = "gymnasium", specifier = ">=1.2.2" },
+    { name = "matplotlib", specifier = ">=3.10.7" },
     { name = "matplotlib", marker = "extra == 'dev'", specifier = ">=3.8.0" },
     { name = "numpy", specifier = ">=2.3.4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4.0" },

@@ -199,7 +199,17 @@ class Plant:
         self.state.p_brake_aux_kw = regen_flow.aux_kw
         self.state.p_brake_regen_kw = regen_flow.aux_kw + charge_alloc.from_regen_kw
         self.state.p_brake_friction_kw = regen_flow.friction_kw
-        
+
+        # Stopped regime: If speed is very low and no positive traction is requested,
+        # lock speed at exactly 0 and skip dynamics (just power auxiliaries with FC)
+        STOPPED_THRESHOLD_MPS = 0.01
+        if self.state.speed_mps < STOPPED_THRESHOLD_MPS and p_req_kw <= 0.0:
+            # Train is stopped - just maintain auxiliary power, no traction dynamics
+            self.state.speed_mps = 0.0
+            # Distance doesn't change when stopped
+            # SOC/H2 already updated above based on power flow
+            return self.state
+
         # Convert power to force for physics calculations
         # P = F * v, so F = P / v (handle v=0 case)
         if self.state.speed_mps > 0.1:  # Avoid division by very small numbers
