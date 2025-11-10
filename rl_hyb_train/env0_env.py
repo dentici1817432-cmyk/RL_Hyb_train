@@ -8,6 +8,7 @@ from collections import deque
 
 from .config import Config
 from .driver import Driver
+from .driver_simple import SimplePReqDriver
 from .plant import Plant
 from .shield import Shield, ShieldedAction
 
@@ -21,6 +22,7 @@ class EpisodeInfo:
     total_penalty_unmet: float = 0.0
     total_penalty_delay: float = 0.0
     total_penalty_smooth: float = 0.0
+    total_penalty_track: float = 0.0
     constraint_violations: int = 0
     distance_km: float = 0.0
     delta_m_h2_kg: float = 0.0
@@ -50,12 +52,16 @@ class Env0(gym.Env):
         self.rng = np.random.default_rng(seed if seed is not None else config.sim.seed)
         
         # Initialize components
-        self.driver = Driver(
-            config.driver,
-            config.randomization,
-            self.rng,
-            plant_kinematic_gain_mps_per_watt=config.plant.kinematic_gain_mps_per_watt
-        )
+        # Choose driver: simple P_req generator if manual_p_req_profile provided, else full driver
+        if config.driver.manual_p_req_profile:
+            self.driver = SimplePReqDriver(config.driver, self.rng)
+        else:
+            self.driver = Driver(
+                config.driver,
+                config.randomization,
+                self.rng,
+                plant_kinematic_gain_mps_per_watt=config.plant.kinematic_gain_mps_per_watt
+            )
         self.plant = Plant(
             config.plant,
             config.battery,
@@ -108,6 +114,7 @@ class Env0(gym.Env):
                 "penalty_delay_eur": 0.0,
                 "penalty_unmet_eur": 0.0,
                 "penalty_smooth_eur": 0.0,
+                "penalty_track_eur": 0.0,
             }
             # Delay tracking
             self._scheduled_time = 0.0  # Expected time based on schedule
@@ -168,7 +175,9 @@ class Env0(gym.Env):
         
         # Reset components
         self.driver.reset()
-        self.driver.set_passenger_mass(passenger_mass_tons)
+        # Only full Driver supports mass-aware kinematics hints
+        if isinstance(self.driver, Driver):
+            self.driver.set_passenger_mass(passenger_mass_tons)
         self.plant.reset(
             soc_init=soc_init,
             tank_init=tank_init,
@@ -435,6 +444,15 @@ class Env0(gym.Env):
         # Unmet demand penalty
         penalty_unmet = self.config.reward_weights.lambda_unmet * self.plant.state.p_unmet_kw
         self.episode_info.total_penalty_unmet += penalty_unmet
+
+        # Tracking penalty (captures both shortfall and oversupply)
+        p_dem_kw = self.plant.state.p_dem_kw
+        p_supply_kw = self.plant.state.p_supply_kw
+        p_scale_kw = max(self.config.reward_weights.p_scale_kw, 1e-6)
+        p_shortfall_kw = max(p_dem_kw - p_supply_kw, 0.0)
+        p_waste_kw = max(p_supply_kw - p_dem_kw, 0.0)
+        penalty_track = self.config.reward_weights.lambda_track * ((p_shortfall_kw + p_waste_kw) / p_scale_kw)
+        self.episode_info.total_penalty_track += penalty_track
         
         # Total reward
         reward = -(
@@ -442,7 +460,7 @@ class Env0(gym.Env):
             cost_grid +
             penalty_smooth +
             penalty_delay
-        ) - penalty_unmet
+        ) - penalty_unmet - penalty_track
         
         # Store per-step costs for renderer
         if self.config.renderer.enabled:
@@ -452,6 +470,7 @@ class Env0(gym.Env):
                 "penalty_delay_eur": penalty_delay,
                 "penalty_unmet_eur": penalty_unmet,
                 "penalty_smooth_eur": penalty_smooth,
+                "penalty_track_eur": penalty_track,
             }
         
         return float(reward)
@@ -497,6 +516,7 @@ class Env0(gym.Env):
                 "penalty_delay_eur": self._step_costs["penalty_delay_eur"],
                 "penalty_unmet_eur": self._step_costs["penalty_unmet_eur"],
                 "penalty_smooth_eur": self._step_costs["penalty_smooth_eur"],
+                "penalty_track_eur": self._step_costs["penalty_track_eur"],
                 "delay_seconds": self._cumulative_delay_s,
                 "passenger_mass_t": float(self.plant.passenger_mass_tons),
                 "aux_bias_kw": float(self.plant.state.aux_bias_kw),

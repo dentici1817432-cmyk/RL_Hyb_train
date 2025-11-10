@@ -1,128 +1,159 @@
-# RL Combined Control — Start→Stop Baseline (Draft)
+# RL EMS Agent — Iteration Plan (Living Doc)
 
-This document proposes a single RL agent that jointly controls traction/braking and the energy subsystem (FC/battery). The initial scope is a simple start→stop route with a fixed time budget; we will iterate and expand to richer scenarios later.
+This plan outlines iterative development for an RL policy that performs Energy Management (EMS) to accommodate an exogenous driver/ATO power request `P_req`. We keep reward shaping light so strategies emerge from physics, preview, and constraints. A separate appendix (below) retains an exploratory “combined control” track.
 
-## Goal
+## Objectives
 
-- Train one policy that:
-  - Chooses traction/brake power and EMS split each step.
-  - Arrives by the episode deadline with speed ≈ 0 at the terminal.
-  - Minimizes lifecycle energy cost subject to safety/physics enforced by the shield/plant.
+- Learn a reactive–anticipatory mapping g(obs) → [fc_frac, batt_cmd] that:
+  - Minimizes OPEX proxy (H₂ + grid) with light regularization.
+  - Respects shielded constraints without frequent projections (ramp, SOC corridor, C‑rate).
+  - Maintains SOC headroom for forecast errors and emergencies (robustness).
+  - Generalizes across route variations and driver deviations from the schedule.
 
-## Scenario (v1)
+## Observations (v1 → v3)
 
-- Route: Station A dwell → accelerate → cruise → brake → Station B dwell.
-- Flat track; fixed passenger mass; fixed initial SOC/tank (no randomization for v1).
-- Episode horizon `T`: fixed (e.g., 1,800 s). Target distance `D_target` chosen to be feasible.
-- Time step: 1 s.
+- v1 (minimal, existing): speed, noisy SOC/tank, filtered P_req, last action, noise.
+- v2 (preview): add time‑to‑stop, grade/segment indicator, P_req trend.
+- v3 (forecast split): expose `P_req_forecast` vs realized `P_req` + uncertainty cue.
+  - Keep option for recurrent policy (LSTM) or short frame stack.
 
-## Action Space (combined control)
+## Actions
 
-- `action = [u_trac, fc_frac, batt_cmd]`
-  - `u_trac ∈ [-1, 1]` → traction request `P_req_agent ∈ [-P_brake_max, +P_pull_max]` with per‑step slew rate.
-  - `fc_frac ∈ [0, 1]` → `P_fc = fc_frac * P_fc_max`.
-  - `batt_cmd ∈ [-1, 1]` → discharge/charge map (positive = discharge, negative = charge) within battery limits.
-- Shield still enforces: FC ramp, SOC corridor, C‑rates, tank minimum.
+- `action = [fc_frac ∈ [0,1], batt_cmd ∈ [-1,1]]`, shield enforces feasibility.
 
-## Observation Space (minimal, v1)
+## Reward (minimal)
 
-Start from existing 10‑D vector and adapt for combined control:
-- speed/v_max
-- noisy SOC, noisy tank
-- phase/progress: `t/T` (0→1)
-- filtered traction proxy: filtered `P_req_agent` normalized
-- last action (3 channels in combined mode)
-- nuisance noise (3 channels)
-- Optional (later v2): time remaining, distance remaining, schedule slack.
+Per step with dt = 1 s:
+- Economic cost: `c_h2·Δm_H2 + c_grid·max(-p_batt,0)·dt_h`
+- Feasibility only via power accommodation (no distance/speed shaping):
+  - Light tracking term on DC bus: `r_track = -λ_track·(P_unmet + P_waste)/P_scale`
+    - `P_dem = P_req (+ aux, with traction/regen efficiencies)`
+    - `P_sup = P_fc + P_batt_dis`
+    - Penalize only unmet and true waste (do NOT penalize captured regen)
+  - Optional: delay proxy `λ_delay·1[behind]·dt` (keep small or omit initially)
+- Light regularization: `λ_smooth·||a_t − a_{t−1}||`
 
-## Rewards
+Notes
+- Do not reward distance or speed directly. Strategy should emerge from costs + accommodating the driver’s power.
+- Keep `λ_track` small (e.g., 1e−6…1e−5 with `P_scale≈p_fc_max_kw`) so economics dominate.
+- Battery‑life terms (throughput/C‑rate) remain zero initially; we track them for selection, not training.
 
-Per‑step cost (negative):
+Leave out battery‑life terms initially. For the “battery‑life” variant, add tiny `λ_cycle` and optional `λ_crate` in a separate config.
 
-```
-r_cost = -(c_h2*Δm_H2 + c_grid*ΔE_charge + λ_unmet*P_unmet + λ_smooth*||a_t - a_{t-1}||)
-```
+## Robustness & Divergence Modeling
 
-Progress shaping (potential‑based):
+- Treat `P_req` as a forecast with error; expose forecast vs realized (v3) or include trend/history.
+- Inject deviations from forecast: dwell jitter, additive/multiplicative demand noise, emergency brakes, surprise accelerations; occasional adhesion dips and envelope clamps.
+- Train with domain randomization over mass, aux bias, timetable jitter, emergency rate.
 
-```
-r_prog = κ_dist * (distance_t - distance_{t-1})
-```
+Policy behaviors to expect
+- Pre‑ramp FC guided by forecast; battery absorbs forecast error.
+- Maintain SOC headroom proportional to uncertainty and proximity to stops to maximize regen capture during unexpected brakes.
 
-Schedule tracking (optional for v1, helpful later):
+## Metrics to Track (not in reward)
 
-```
-d_nom(t) = (t/T) * D_target
-r_sched = -λ_sched * max(0, d_nom(t) - distance_t)  # lateness only
-```
+- €/km proxy, kg H₂/100 km, kWh charge/100 km.
+- Unmet, clipped regen/waste, shield flags, FC action jerk.
+- Battery stress: kWh throughput, max C‑rate, SOC std, rainflow cycles (offline).
+- Tracking diagnostics: `P_unmet`, `P_waste`, captured regen vs friction.
 
-Terminal penalties/bonus at `t = T`:
+## Phased Roadmap
 
-```
-s_short  = max(0, D_target - distance_T)
-v_resid  = max(0, speed_T - v_stop_threshold)
-s_over   = max(0, distance_T - D_target)  # optional overshoot penalty
-r_term   = -λ_term_pos*s_short - λ_term_speed*v_resid - λ_overshoot*s_over + b_on_time*1[s_short=0 ∧ v_resid=0]
-```
+1) Baseline EMS RL (clean schedule)
+   - Use v1 observations, minimal reward.
+   - Deterministic route; no emergencies; verify stability and cost KPIs.
 
-Total:
+2) Add preview + trend
+   - Upgrade to v2 observations. Expect anticipatory FC pre‑ramp and SOC headroom before stops.
 
-```
-r_t = r_cost + r_prog (+ r_sched) ; and at t=T add r_term
-```
+3) Forecast vs actual split
+   - v3 observations; inject forecast error + rare emergencies. Target low unmet and low clipped regen under surprises.
 
-Suggested initial scales (tunable):
-- `λ_unmet`: 1e−4 … 1e−3 per kW
-- `κ_dist`: 1e−3 per meter‑equivalent (so typical progress yields ~0.01–0.1 r/s)
-- `λ_smooth`: 1e−2 (L2/L1 on action deltas)
-- `λ_sched`: 1e−3 … 1e−2 per km lag (optional)
-- `λ_term_pos`: 10 … 100 per km shortfall (dominates failure to arrive)
-- `λ_term_speed`: 1 … 10 per m/s residual
-- `λ_overshoot`: 0.5 … 2 (if overshoot is undesirable)
-- `v_stop_threshold`: 0.2 … 0.5 m/s
-- `b_on_time`: +1.0
+4) Two policy profiles
+   - OPEX‑min model (current reward weights).
+   - Battery‑life model with small `λ_cycle`, `λ_crate` (selection by config or run tag).
 
-## Config Knobs to Add (proposal)
+5) Lifetime evaluation (offline)
+   - Add evaluator to compute EFC, rainflow damage, projected life; select checkpoints on Pareto (€/km vs life).
 
-- `scenario.control_mode: "combined" | "split"` (default: `split` for backward compatibility)
-- `scenario.route`:
-  - `d_target_km`
-  - `v_stop_threshold_mps`
-- `scenario.traction` (combined mode only):
-  - `p_pull_max_kw`, `p_brake_max_kw`
-  - `rate_limit_kw_per_s`, `action_smoothing_tau_s`
-- `scenario.reward_weights` additions:
-  - `kappa_distance`, `lambda_schedule`, `lambda_terminal_pos`, `lambda_terminal_speed`, `lambda_overshoot`
+6) Stress & generalization suite
+   - Holdout scenarios: long downhill after high SOC, back‑to‑back brakes, adhesion dips.
 
-## Feasibility Guardrails
+## Intermediate Goals (Curriculum with Gates)
 
-- Choose `P_pull_max`, `P_brake_max`, and rate limits so `D_target` is achievable within `T`.
-- Keep auxiliaries and generic losses realistic but not prohibitive.
-- Start with fixed passenger mass, SOC/tank; add randomization after baseline.
+We progress through five capabilities. Each stage adds signals/randomization and has clear evaluation gates before advancing.
 
-## Training Plan (v1)
+1) Accommodate Power (Feasibility)
+- Setup: v1 observations, deterministic route, no emergencies.
+- Reward: economics + small λ_track + small λ_smooth.
+- Success criteria (gate):
+  - P95 unmet ≤ 0.5% of peak demand; mean unmet ≤ 0.1%.
+  - Stable power split (no chattering); minimal shield projections.
 
-- Algorithm: SAC (preferred) or PPO.
-- Fixed scenario (no randomization), deterministic seed.
-- Disable live rendering; log KPIs; save final frame for periodic checks.
-- 1–3M steps to get a baseline policy.
+2) Cost Efficiency (Economics)
+- Setup: same as (1); tune costs only.
+- Reward: economics primary (H₂ + grid), λ_track small, λ_smooth small.
+- Success criteria:
+  - €/km proxy within X% of tuned baseline EMS; kg H₂/100km reduced vs naive.
+  - No regressions on unmet gate from (1).
 
-KPIs:
-- On‑time arrival rate (distance_T ≥ D_target and speed_T ≤ v_stop_threshold).
-- €/km, H2 vs grid split.
-- Unmet demand (avg/max), constraint violations.
-- Final SOC/tank sanity.
+3) Anticipation of P_req Regimes
+- Setup: add v2 preview channels (time‑to‑stop, grade/segment, trend).
+- Randomization: mild timetable jitter and mass/aux drift.
+- Reward: unchanged (minimal).
+- Success criteria:
+  - Lower unmet during rising‑demand segments; earlier FC pre‑ramp.
+  - Higher regen capture near stops; reduced clipped regen vs (2).
 
-## Milestones
+4) Headroom for Emergencies (Robustness)
+- Setup: v3 forecast vs actual (or keep v2 + trend/history); inject emergency brakes/accelerations (Poisson), adhesion dips.
+- Reward: unchanged; λ_track remains small.
+- Success criteria:
+  - Under emergencies, unmet stays below threshold; clipped regen reduced by Y%.
+  - SOC distribution shifts to maintain headroom before high‑uncertainty windows.
 
-1) Wire combined mode action/obs/reward/terminal (behind config flag); run smoke test.
-2) Tune weights to achieve on‑time arrival in the fixed scenario.
-3) Add light randomization (initial SOC/tank, passenger mass, aux bias) and retune.
-4) Add schedule tracking; later add grades/stops; expand to multi‑stop routes.
+5) Battery Lifetime Maximization (Selection)
+- Setup: continue training with minimal reward OR add tiny λ_cycle/λ_crate in a separate run.
+- Logging: throughput, C‑rate, rainflow cycles; evaluate life offline.
+- Success criteria:
+  - Pareto improvement: maintain (2)–(4) cost/robustness gates while reducing EFC/cycle damage.
+  - Select checkpoint by Pareto frontier (€/km vs life proxy).
 
-## Open Questions
+### Experiment Timeline (suggested)
+- Weeks 1–2: Goals (1) and (2) to convergence; establish baselines.
+- Weeks 3–4: Goal (3) preview; ablations on which preview helps most.
+- Weeks 5–6: Goal (4) robustness; stress test suite + CVaR analysis of unmet.
+- Weeks 7–8: Goal (5) lifetime selection; finalize Pareto trade‑offs.
 
-- Do we penalize overshoot distance or allow it if stopped by T?
-- Should progress shaping be distance‑only, or include negative shaping when braking late?
-- Do we need observation of “time remaining” and “distance remaining” in v1 or only in v2?
+## Implementation TODOs
+
+- [ ] Confirm obs include filtered `P_req` and last action (v1).
+- [ ] Add v2 channels: `time_to_stop_norm`, grade/segment indicator, `dP_req_dt` trend (config‑gated).
+- [ ] Add optional v3: `P_req_forecast` vs realized, plus an uncertainty cue.
+- [ ] Keep reward minimal in `env0_env._compute_reward` (economics + small `λ_track` + small `λ_smooth`).
+- [ ] Add `lambda_track` and `p_scale_kw` to config; compute `(P_unmet + P_waste)/P_scale` and include in reward.
+- [ ] Surface `P_waste` in plant/state using regen friction/post‑aux signals; ensure it’s logged.
+- [ ] Extend logger/info with: battery throughput (kWh), C‑rate peaks, clipped regen, `P_waste`, `P_unmet`, shield flags.
+- [ ] Add `scripts/eval_lifetime.py` for rainflow cycles, EFC, and simple damage; output €/km vs life Pareto.
+- [ ] Provide SB3 PPO/LSTM training script with two presets (opex_min, batt_life).
+
+## Immediate Next Steps (High‑Value)
+
+1) Implement λ_track + P_waste
+- Add config keys: `scenario.reward_weights.lambda_track`, `scenario.reward_weights.p_scale_kw`.
+- In reward, add `r_track = -lambda_track * (P_unmet + P_waste) / p_scale_kw` (exclude captured regen).
+
+2) Add v2 observation channels
+- `time_to_stop_norm`, `grade/segment`, `dP_req_dt` under `scenario.observations.*` with toggles.
+- Update normalization and obs space accordingly.
+
+3) Logging for lifetime and tracking
+- Log per‑step: `|p_batt_kw|*dt_h`, `|p_batt_kw|/P_max`, SOC sample, `P_unmet`, `P_waste`, clipped regen.
+- Aggregate: EFC, max C‑rate, SOC std in episode summary.
+
+4) Lifetime evaluator
+- New script `scripts/eval_lifetime.py`: compute rainflow on SOC trace, EFC, simple cycle damage; plot €/km vs life and select Pareto checkpoints.
+
+
+---
 

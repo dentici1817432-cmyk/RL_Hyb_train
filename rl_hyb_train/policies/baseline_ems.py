@@ -40,14 +40,29 @@ class BaselineEMS:
         """Reset policy state for new episode."""
         self.last_action = np.array([0.5, 0.0])
     
+    def act(self, obs: np.ndarray, info: Dict[str, Any] = None) -> np.ndarray:
+        """
+        Compute EMS action (EMSPolicy protocol interface).
+
+        Args:
+            obs: 12-dim observation vector
+            info: Environment info dict (optional)
+
+        Returns:
+            action: [fc_frac, batt_cmd] in action space ranges
+        """
+        if info is None:
+            info = {}
+        return self.compute_action(obs, info)
+
     def compute_action(self, obs: np.ndarray, info: Dict[str, Any]) -> np.ndarray:
         """
         Compute EMS action based on current state.
-        
+
         Args:
             obs: 12-dim observation vector
             info: Environment info dict
-            
+
         Returns:
             action: [fc_frac, batt_cmd] in action space ranges
         """

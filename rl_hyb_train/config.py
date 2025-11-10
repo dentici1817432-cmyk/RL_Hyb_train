@@ -155,6 +155,8 @@ class RewardWeightsConfig:
     lambda_smooth: float = 0.01
     lambda_delay: float = 0.5
     lambda_unmet: float = 1.0e-6
+    lambda_track: float = 0.0
+    p_scale_kw: float = 1000.0
 
 
 @dataclass

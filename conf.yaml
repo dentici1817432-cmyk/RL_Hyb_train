@@ -51,40 +51,42 @@ scenario:
     p_req_smoothing_tau_s: 3.0
     p_req_rate_limit_kw_per_s: 1000.0
     p_loss_watts: 200000.0
-    manual_speed_profile:
-      - duration_s: 200
-        speed_mps: 0.0
-        label: "Station A"
-        hold: true
-      - duration_s: 300
-        speed_mps: 20.0
-        label: "Depart A"
-        grade_percent: 0.009
-        p_bias_kw: 50.0
-      - duration_s: 1000
-        speed_mps: 22.22
-        label: "Climb 1"
-        grade_percent: 0.0238
-        p_bias_kw: 100.0
-      - duration_s: 600
-        speed_mps: 22.22
-        label: "Station B"
-        hold: true
-      - duration_s: 300
-        speed_mps: 20.0
-        label: "Depart B"
-        grade_percent: 0.009
-        p_bias_kw: 50.0
-      - duration_s: 800
-        speed_mps: 22.22
-        label: "Climb 2"
-        grade_percent: -0.018
-        p_bias_kw: -20.0
-      - duration_s: 200
-        speed_mps: 0.0
-        label: "Station C"
-        hold: true
-    manual_speed_profile:  # Optional speed profile for the driver PID
+    # NOTE: Alternative manual_speed_profile (simple 3-station variant)
+    # Uncomment below and comment out the detailed profile if you want a shorter scenario
+    # manual_speed_profile:
+    #   - duration_s: 200
+    #     speed_mps: 0.0
+    #     label: "Station A"
+    #     hold: true
+    #   - duration_s: 300
+    #     speed_mps: 20.0
+    #     label: "Depart A"
+    #     grade_percent: 0.009
+    #     p_bias_kw: 50.0
+    #   - duration_s: 1000
+    #     speed_mps: 22.22
+    #     label: "Climb 1"
+    #     grade_percent: 0.0238
+    #     p_bias_kw: 100.0
+    #   - duration_s: 600
+    #     speed_mps: 22.22
+    #     label: "Station B"
+    #     hold: true
+    #   - duration_s: 300
+    #     speed_mps: 20.0
+    #     label: "Depart B"
+    #     grade_percent: 0.009
+    #     p_bias_kw: 50.0
+    #   - duration_s: 800
+    #     speed_mps: 22.22
+    #     label: "Climb 2"
+    #     grade_percent: -0.018
+    #     p_bias_kw: -20.0
+    #   - duration_s: 200
+    #     speed_mps: 0.0
+    #     label: "Station C"
+    #     hold: true
+    manual_speed_profile:  # Detailed speed profile for the driver PID
       - duration_s: 150
         speed_mps: 0.0
         label: "Station A dwell"
@@ -209,6 +211,8 @@ scenario:
     lambda_smooth: 0.01
     lambda_delay: 0.5
     lambda_unmet: 1.0e-6
+    lambda_track: 0.0
+    p_scale_kw: 1000.0
   randomization:  # Episode-to-episode randomness
     passenger_mass_tons_min: 180.0
     passenger_mass_tons_max: 260.0

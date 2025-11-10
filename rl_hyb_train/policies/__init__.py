@@ -1,6 +1,7 @@
 """EMS policy collection with a unified act(...) interface."""
 from .base import EMSPolicy, InfoDrivenPolicy, Action
-from .baseline import BaselineEMS
+from .baseline import BaselineEMS  # Simple FC follower strategy
+from .baseline_ems import BaselineEMS as BaselineNominalEMS  # FC-at-nominal strategy
 from .balanced import BalancedEMS, BalancedEMSConfig
 from .scenario import ScenarioAwareEMS, ScenarioEMSConfig
 from .mpc import MPCEms, MPCConfig
@@ -11,6 +12,7 @@ __all__ = [
     "EMSPolicy",
     "InfoDrivenPolicy",
     "BaselineEMS",
+    "BaselineNominalEMS",
     "BalancedEMS",
     "BalancedEMSConfig",
     "ScenarioAwareEMS",

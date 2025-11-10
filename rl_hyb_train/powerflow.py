@@ -1,4 +1,31 @@
-"""Reusable helpers for DC-bus power balance and energy bookkeeping."""
+"""
+Reusable helpers for DC-bus power balance and energy bookkeeping.
+
+This module provides pure functions for computing power flows in the hybrid train:
+- Battery discharge/charge power resolution with efficiency
+- Regenerative braking allocation (aux loads, battery charging, friction brakes)
+- Fuel cell excess power available for battery charging
+- DC bus power balance accounting
+- SOC delta calculations
+- H2 consumption calculations
+
+Key Concepts:
+    - Battery power is signed: positive = discharge, negative = charge
+    - Battery efficiency is applied: discharge_kw / eta_discharge = delivered_kw
+    - Regenerative braking priority: 1) Aux loads, 2) Battery charging, 3) Friction brakes
+    - Power balance: p_supply_kw + p_unmet_kw = p_dem_kw
+
+Example:
+    >>> from rl_hyb_train.powerflow import compute_power_balance
+    >>> balance = compute_power_balance(
+    ...     p_req_kw=300.0,
+    ...     p_aux_kw=60.0,
+    ...     p_fc_kw=200.0,
+    ...     p_batt_delivered_kw=150.0
+    ... )
+    >>> print(f"Demand: {balance.p_dem_kw} kW, Unmet: {balance.p_unmet_kw} kW")
+    Demand: 360.0 kW, Unmet: 10.0 kW
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass

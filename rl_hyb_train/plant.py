@@ -15,29 +15,69 @@ from .powerflow import (
 
 @dataclass
 class PlantState:
-    """State of the plant (SOC, tank, speed, etc.)."""
-    soc: float = 0.65  # State of charge [0, 1]
-    tank_level: float = 0.85  # Normalized H2 tank level [0, 1]
-    speed_mps: float = 0.0  # Speed in m/s
-    p_fc_kw: float = 0.0  # Current FC power (kW)
-    p_batt_kw: float = 0.0  # Current battery power (kW, positive = discharge)
-    aux_bias_kw: float = 0.0  # Auxiliary bias (random walk)
-    p_unmet_kw: float = 0.0  # Unmet demand
-    distance_km: float = 0.0  # Distance traveled
-    p_batt_charge_regen_kw: float = 0.0  # Battery charging from regen (kW)
-    p_batt_charge_fc_kw: float = 0.0  # Battery charging from FC excess (kW)
-    p_dem_kw: float = 0.0  # Total demand (traction + auxiliaries)
-    p_supply_kw: float = 0.0  # Total supplied power (FC + batt after efficiency)
-    p_delivered_kw: float = 0.0  # Net power delivered to traction bus after aux/unmet
-    p_loss_kw: float = 0.0  # Loss term applied this step
-    p_regen_post_aux_kw: float = 0.0  # Regen available after hotel loads
-    p_batt_discharge_kw: float = 0.0  # Actual discharged power command (kW)
-    p_batt_charge_kw: float = 0.0  # Actual charge accepted (kW)
-    p_batt_delivered_kw: float = 0.0  # Battery contribution after efficiency (kW)
-    p_brake_total_kw: float = 0.0  # Requested braking power magnitude
-    p_brake_regen_kw: float = 0.0  # Portion captured electrically (incl. aux+charging)
-    p_brake_aux_kw: float = 0.0  # Regen portion that feeds auxiliaries
-    p_brake_friction_kw: float = 0.0  # Residual handled by mechanical brakes
+    """
+    Complete state of the hybrid train plant.
+
+    Energy Storage State:
+        soc: Battery state of charge [0, 1]
+        tank_level: Normalized H2 tank level [0, 1]
+
+    Motion State:
+        speed_mps: Train speed (m/s)
+        distance_km: Cumulative distance traveled (km)
+
+    Power Commands (inputs):
+        p_fc_kw: Fuel cell power output (kW)
+        p_batt_kw: Battery power (kW, positive = discharge, negative = charge)
+
+    Power Demand & Supply:
+        p_dem_kw: Total electrical demand = p_req + p_aux (kW)
+        p_supply_kw: Total supply = p_fc + p_batt_delivered (kW)
+        p_delivered_kw: Net power to traction after aux and unmet (kW)
+        p_unmet_kw: Demand that couldn't be met by supply (kW)
+
+    Auxiliary Loads:
+        aux_bias_kw: Random walk offset for auxiliary power (kW)
+
+    Battery Power Flow Detail:
+        p_batt_discharge_kw: Actual battery discharge (kW, >= 0)
+        p_batt_charge_kw: Actual battery charge accepted (kW, >= 0)
+        p_batt_delivered_kw: Battery contribution after discharge efficiency (kW)
+        p_batt_charge_regen_kw: Battery charging from regenerative braking (kW)
+        p_batt_charge_fc_kw: Battery charging from FC excess (kW)
+
+    Braking Power Flow:
+        p_brake_total_kw: Total braking power requested (kW)
+        p_brake_regen_kw: Braking power captured electrically (kW)
+        p_brake_aux_kw: Regen portion consumed by auxiliaries (kW)
+        p_brake_friction_kw: Braking power dissipated as heat in friction brakes (kW)
+
+    Other:
+        p_loss_kw: Constant loss term (stored but not currently used in balance)
+        p_regen_post_aux_kw: Regenerative power available after auxiliary loads (kW)
+    """
+    soc: float = 0.65
+    tank_level: float = 0.85
+    speed_mps: float = 0.0
+    p_fc_kw: float = 0.0
+    p_batt_kw: float = 0.0
+    aux_bias_kw: float = 0.0
+    p_unmet_kw: float = 0.0
+    distance_km: float = 0.0
+    p_batt_charge_regen_kw: float = 0.0
+    p_batt_charge_fc_kw: float = 0.0
+    p_dem_kw: float = 0.0
+    p_supply_kw: float = 0.0
+    p_delivered_kw: float = 0.0
+    p_loss_kw: float = 0.0
+    p_regen_post_aux_kw: float = 0.0
+    p_batt_discharge_kw: float = 0.0
+    p_batt_charge_kw: float = 0.0
+    p_batt_delivered_kw: float = 0.0
+    p_brake_total_kw: float = 0.0
+    p_brake_regen_kw: float = 0.0
+    p_brake_aux_kw: float = 0.0
+    p_brake_friction_kw: float = 0.0
 
 
 class Plant:
