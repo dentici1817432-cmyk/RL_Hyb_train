@@ -9,9 +9,6 @@ dependencies = [
     "matplotlib>=3.10.7",
     "numpy>=2.3.4",
     "pyyaml>=6.0.3",
-    "stable-baselines3>=2.7.0",
-    "sb3-contrib>=2.7.0",
-    "tensorboard>=2.17.0",
     "tqdm>=4.66.0",
     "rich>=13.9.0",
 ]
@@ -21,3 +18,17 @@ dev = [
     "matplotlib>=3.8.0",
     "pytest>=7.4.0",
 ]
+
+rl = [
+    "stable-baselines3>=2.7.0",
+    "sb3-contrib>=2.7.0",
+    "tensorboard>=2.17.0",
+]
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["rl_hyb_train*"]
+exclude = ["runs", "matlab_simulink"]

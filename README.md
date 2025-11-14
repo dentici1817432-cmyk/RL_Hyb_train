@@ -30,20 +30,25 @@ uv run python main.py
 
 ## Installation
 
-Requires Python 3.11+.
+Requires Python 3.11+. We recommend installing dependencies and running tools via [uv](https://docs.astral.sh/uv/).
 
-- Using pip (editable install):
-  ```bash
-  python -m venv .venv && source .venv/bin/activate
-  pip install -U pip
-  pip install -e .
-  ```
+```bash
+# Ensure uv can provision a Python 3.11+ interpreter
+uv python install 3.11
 
-- Using uv (recommended for local tooling):
-  ```bash
-  uv run python -V            # ensure Python available via uv
-  uv pip install -e .
-  ```
+# Create and activate a virtual environment managed by uv
+uv venv .venv
+source .venv/bin/activate
+
+# Install the project in editable mode with all extras
+uv pip install -e ".[all]"
+```
+
+For ad-hoc commands without activating the virtual environment explicitly, prefix them with `uv run`, for example:
+
+```bash
+uv run python main.py
+```
 
 
 ## Diagram

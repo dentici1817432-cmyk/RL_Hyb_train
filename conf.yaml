@@ -1,56 +1,56 @@
-train:
-  plant:  # Physical limits and auxiliaries for the plant model
-    v_max_mps: 50.0
-    kinematic_gain_mps_per_watt: 1.0e-6
-    p_aux_base_watts: 60000
+train:  # Core physical model, safety enforcement, and cost parameters
+  plant:  # Physical limits and auxiliary loads for the plant model
+    v_max_mps: 50.0                  # Max speed used for normalization and caps
+    kinematic_gain_mps_per_watt: 1.0e-6  # Simplified speed response per watt
+    p_aux_base_watts: 60000          # Constant auxiliary power draw on DC bus
   battery:  # Battery sizing and efficiency
-    e_batt_kwh: 200.0
-    p_batt_max_discharge_kw: 3000.0
-    p_batt_max_charge_kw: 1000.0
-    eta_charge: 0.95
-    eta_discharge: 0.94
-    soc_init_min: 0.45
-    soc_init_max: 0.45
-    soc_hard_min: 0.15
-    soc_hard_max: 1.00
-  fuel_cell:  # Fuel-cell stack limits
-    p_fc_max_kw: 100.0
-    eta_fc: 0.50
-    h2_lhv_kwh_per_kg: 33.3
-    tank_capacity_kg: 50.0
-    tank_init_min: 0.70
-    tank_init_max: 1.00
-    tank_hard_min: 0.02
-    ramp_kw_per_s: 40.0
+    e_batt_kwh: 200.0                # Battery capacity
+    p_batt_max_discharge_kw: 3000.0  # Max discharge power (positive)
+    p_batt_max_charge_kw: 1000.0     # Max charge power magnitude (negative on bus)
+    eta_charge: 0.95                 # Charge efficiency
+    eta_discharge: 0.94              # Discharge efficiency
+    soc_init_min: 0.45               # Initial SOC lower bound (used if uniform enabled)
+    soc_init_max: 0.45               # Initial SOC upper bound (same as min → fixed)
+    soc_hard_min: 0.15               # Termination threshold if SOC falls below
+    soc_hard_max: 1.00               # Upper hard bound (safety ceiling)
+  fuel_cell:  # Fuel-cell stack limits and H2 store
+    p_fc_max_kw: 100.0               # Max FC power
+    eta_fc: 0.50                     # FC electrical efficiency
+    h2_lhv_kwh_per_kg: 33.3          # Hydrogen lower heating value for kg↔kWh
+    tank_capacity_kg: 50.0           # H2 tank capacity
+    tank_init_min: 0.70              # Initial tank fraction lower bound
+    tank_init_max: 1.00              # Initial tank fraction upper bound
+    tank_hard_min: 0.02              # Termination if tank fraction falls below
+    ramp_kw_per_s: 40.0              # FC ramp rate limit (kW per second)
   shield:  # Safety corridor and enforcement toggles
-    soc_soft_min: 0.20
-    soc_soft_max: 0.90
-    enforce_soc_corridor: true
-    enforce_fc_ramp: true
-    enforce_crate_caps: true
+    soc_soft_min: 0.20               # Soft SOC corridor lower bound (clipping)
+    soc_soft_max: 0.90               # Soft SOC corridor upper bound (clipping)
+    enforce_soc_corridor: true       # Enforce SOC corridor via action clipping
+    enforce_fc_ramp: true            # Enforce FC ramp-rate limit
+    enforce_crate_caps: true         # Enforce battery C-rate power caps
   costs:  # Energy prices used inside reward
-    c_h2_eur_per_kg: 6.0
-    c_grid_eur_per_kwh: 0.18
+    c_h2_eur_per_kg: 6.0             # Cost per kg of hydrogen
+    c_grid_eur_per_kwh: 0.18         # Cost per kWh grid charging
 
-scenario:
+scenario:  # Episode setup, driver/ATO, observations, rendering/logging
   sim:  # Episode timing/random seed
-    dt_seconds: 1
-    episode_steps_min: 1800
-    episode_steps_max: 2400
-    seed: 123
+    dt_seconds: 1                    # Simulation timestep (s)
+    episode_steps_min: 1800          # Min episode length (randomized)
+    episode_steps_max: 2400          # Max episode length (randomized)
+    seed: 123                        # Base RNG seed
   route:
-    profiles: ["nil_short_mountain"]
-    grade_segments_percent: [0.009, 0.0238, 0.009, -0.018, -0.018, 0.018]  # ~9‰ avg, ~23.8‰ max
-    segment_duration_s: 2000.0  # ~2km segments  
-    speed_limits_mps: [25.0, 22.22, 22.22, 22.22, 22.22, 22.22]  # 90/60 km/h limits
+    profiles: ["nil_short_mountain"]  # Named route selection
+    grade_segments_percent: [0.009, 0.0238, 0.009, -0.018, -0.018, 0.018]  # Track grade per segment
+    segment_duration_s: 2000.0       # Segment duration (~distance proxy)
+    speed_limits_mps: [25.0, 22.22, 22.22, 22.22, 22.22, 22.22]  # Segment speed limits
   stops:
-    count: 4
-    dwell_mean_s: 120.0
-    dwell_jitter_frac: 0.2
-  driver:  # Driver/ATO parameters  
-    p_req_smoothing_tau_s: 3.0
-    p_req_rate_limit_kw_per_s: 1000.0
-    p_loss_watts: 200000.0
+    count: 4                         # Number of intermediate stations
+    dwell_mean_s: 120.0              # Mean dwell time at stations
+    dwell_jitter_frac: 0.2           # Fractional jitter on dwell durations
+  driver:  # Driver/ATO parameters
+    p_req_smoothing_tau_s: 3.0       # Low-pass filter constant for P_req
+    p_req_rate_limit_kw_per_s: 1000.0  # Rate limit on requested power
+    p_loss_watts: 200000.0           # Aggregate drivetrain losses
     # NOTE: Alternative manual_speed_profile (simple 3-station variant)
     # Uncomment below and comment out the detailed profile if you want a shorter scenario
     # manual_speed_profile:
@@ -86,162 +86,162 @@ scenario:
     #     speed_mps: 0.0
     #     label: "Station C"
     #     hold: true
-    manual_speed_profile:  # Detailed speed profile for the driver PID
+    manual_speed_profile:  # Detailed speed profile for the driver PID (overrides planner)
       - duration_s: 150
-        speed_mps: 0.0
+        speed_mps: 0.0               # Hold at station
         label: "Station A dwell"
         hold: true
       - duration_s: 180
-        speed_mps: 8.0
+        speed_mps: 8.0               # Initial departure phase
         label: "Depart A (phase 1)"
         grade_percent: 0.3
         p_bias_kw: 20.0
       - duration_s: 200
-        speed_mps: 16.0
+        speed_mps: 16.0              # Build-up phase
         label: "Depart A (phase 2)"
         grade_percent: 0.4
         p_bias_kw: 35.0
       - duration_s: 220
-        speed_mps: 22.0
+        speed_mps: 22.0              # Settle to suburban speed
         label: "Settle to suburban"
         grade_percent: 0.5
         p_bias_kw: 55.0
       - duration_s: 400
-        speed_mps: 22.0
+        speed_mps: 22.0              # Suburban cruise
         label: "Suburban cruise"
         grade_percent: 0.2
         p_bias_kw: 10.0
       - duration_s: 240
-        speed_mps: 26.0
+        speed_mps: 26.0              # Climb segment 1
         label: "Climb 1"
         grade_percent: 0.7
         p_bias_kw: 80.0
       - duration_s: 240
-        speed_mps: 30.0
+        speed_mps: 30.0              # Climb segment 2
         label: "Climb 2"
         grade_percent: 0.8
         p_bias_kw: 95.0
       - duration_s: 360
-        speed_mps: 30.0
+        speed_mps: 30.0              # Plateau cruise
         label: "Plateau cruise"
         grade_percent: 0.0
         p_bias_kw: 0.0
       - duration_s: 200
-        speed_mps: 27.0
+        speed_mps: 27.0              # Minor descent
         label: "Shallow dip"
         grade_percent: -0.3
         p_bias_kw: -20.0
       - duration_s: 220
-        speed_mps: 33.0
+        speed_mps: 33.0              # Minor rise
         label: "Shallow rise"
         grade_percent: 0.3
         p_bias_kw: 25.0
       - duration_s: 300
-        speed_mps: 18.0
+        speed_mps: 18.0              # Approach next station
         label: "Approach B"
         grade_percent: -0.6
         p_bias_kw: -70.0
       - duration_s: 180
-        speed_mps: 0.0
+        speed_mps: 0.0               # Station stop
         label: "Station B dwell"
         hold: true
       - duration_s: 160
-        speed_mps: 10.0
+        speed_mps: 10.0              # Departure phase
         label: "Depart B (phase 1)"
         grade_percent: 0.3
         p_bias_kw: 18.0
       - duration_s: 200
-        speed_mps: 20.0
+        speed_mps: 20.0              # Departure build-up
         label: "Depart B (phase 2)"
         grade_percent: 0.4
         p_bias_kw: 30.0
       - duration_s: 240
-        speed_mps: 28.0
+        speed_mps: 28.0              # Rebuild speed
         label: "Rebuild speed"
         grade_percent: 0.5
         p_bias_kw: 60.0
       - duration_s: 260
-        speed_mps: 36.0
+        speed_mps: 36.0              # Express climb
         label: "Express climb"
         grade_percent: 0.6
         p_bias_kw: 75.0
       - duration_s: 360
-        speed_mps: 36.0
+        speed_mps: 36.0              # Express cruise
         label: "Express cruise"
         grade_percent: 0.0
         p_bias_kw: 0.0
       - duration_s: 280
-        speed_mps: 20.0
+        speed_mps: 20.0              # Terminal approach
         label: "Terminal approach"
         grade_percent: -0.7
         p_bias_kw: -80.0
       - duration_s: 200
-        speed_mps: 0.0
+        speed_mps: 0.0               # Final station stop
         label: "Station C dwell"
         hold: true
-    speed_target_smoothing_tau_s: 14.0
-    speed_tracking_tau_s: 16.0
-    speed_tracking_accel_limit_mps2: 0.20
-    speed_tracking_brake_limit_mps2: 0.25
-    dwell_speed_threshold_mps: 0.4
-    speed_control_power_clip_kw: 500.0
-    speed_tracking_jerk_limit_mps3: 0.10
-    speed_tracking_use_pid: true
-    speed_pid_kp: 0.004
-    speed_pid_ki: 0.04
-    speed_pid_kd: 0.03
-    speed_pid_integral_limit: 0.6
-    speed_pid_derivative_filter_tau_s: 1.5
+    speed_target_smoothing_tau_s: 14.0   # LPF on target speed
+    speed_tracking_tau_s: 16.0           # Response time constant for tracking
+    speed_tracking_accel_limit_mps2: 0.20  # Max accel for tracking loop
+    speed_tracking_brake_limit_mps2: 0.25  # Max decel for tracking loop
+    dwell_speed_threshold_mps: 0.4        # Threshold to detect station dwell
+    speed_control_power_clip_kw: 500.0    # Limit on controller power output
+    speed_tracking_jerk_limit_mps3: 0.10  # Jerk cap for smoothness
+    speed_tracking_use_pid: true          # Enable PID controller
+    speed_pid_kp: 0.004                   # PID proportional gain
+    speed_pid_ki: 0.04                    # PID integral gain
+    speed_pid_kd: 0.03                    # PID derivative gain
+    speed_pid_integral_limit: 0.6         # Integral windup clamp
+    speed_pid_derivative_filter_tau_s: 1.5  # D-term filter constant
     # Additional smoothing and anti-windup controls
-    speed_error_deadband_mps: 0.20
-    speed_integral_separation_mps: 0.6
-    speed_disable_integral_when_saturated: true
-    speed_measurement_filter_tau_s: 5.0
+    speed_error_deadband_mps: 0.20        # Ignore small speed errors
+    speed_integral_separation_mps: 0.6    # Disable I below this error
+    speed_disable_integral_when_saturated: true  # Anti-windup mode
+    speed_measurement_filter_tau_s: 5.0   # Filter on measured speed
     # Trajectory filtering + preview planner
-    speed_profile_dt_seconds: 1.0
-    speed_profile_filter_enable: true
-    speed_profile_filter_tau_s: 10.0
-    speed_preview_horizon_s: 18.0
-    speed_planner_enable: true
-    speed_planner_horizon_s: 14.0
-    speed_planner_min_horizon_s: 6.0
-    speed_planner_penalty_accel: 0.15
-    speed_planner_penalty_jerk: 0.05
+    speed_profile_dt_seconds: 1.0         # Discretization for speed profile
+    speed_profile_filter_enable: true     # Enable profile filtering
+    speed_profile_filter_tau_s: 10.0      # Profile filter constant
+    speed_preview_horizon_s: 18.0         # Preview horizon for tracking
+    speed_planner_enable: true            # Enable preview planner
+    speed_planner_horizon_s: 14.0         # Planner horizon
+    speed_planner_min_horizon_s: 6.0      # Minimum horizon fallback
+    speed_planner_penalty_accel: 0.15     # Planner accel penalty weight
+    speed_planner_penalty_jerk: 0.05      # Planner jerk penalty weight
   reward_weights:  # Per-step reward components
-    lambda_smooth: 0.01
-    lambda_delay: 0.5
-    lambda_unmet: 1.0e-6
-    lambda_track: 0.0
-    p_scale_kw: 1000.0
+    lambda_smooth: 0.01                   # Penalty on action changes
+    lambda_delay: 0.5                     # Penalty for lateness
+    lambda_unmet: 1.0e-6                  # Penalty per kW unmet demand
+    lambda_track: 0.0                     # Optional speed tracking penalty
+    p_scale_kw: 1000.0                    # Power scale reference
   randomization:  # Episode-to-episode randomness
-    passenger_mass_tons_min: 180.0
-    passenger_mass_tons_max: 260.0
-    aux_bias_rw_sigma_kw: 0.0
-    soc_init_uniform: true
-    tank_init_uniform: true
-    timetable_jitter_enable: true
+    passenger_mass_tons_min: 180.0        # Hidden passenger mass lower bound
+    passenger_mass_tons_max: 260.0        # Hidden passenger mass upper bound
+    aux_bias_rw_sigma_kw: 0.0             # Aux load random-walk sigma
+    soc_init_uniform: true                # Use uniform SOC init in [min,max]
+    tank_init_uniform: true               # Use uniform tank init in [min,max]
+    timetable_jitter_enable: true         # Randomize timetable/dwell
   observations:  # Observation normalization and noise
-    include_p_req_kw: true
-    include_last_action: true
-    include_noise_channels: 3
-    normalize_to_unit_box: true
-    p_req_max_kw: 2000.0
-    soc_noise_std: 0.02
-    tank_noise_std: 0.02
-    nuisance_noise_std: 0.1
-  renderer:  # UI/renderer defaults (always force-enabled by test harness)
-    enabled: true
-    mode: human
-    render_every: 5
-    rolling_window_s: 180
-    dpi: 110
-    figsize: [16, 9]
-    show_hidden_debug: false
-    draw_schedule: true
-    write_video: false
-    video_path: "runs/env0_episode.mp4"
-    write_png_every: 0
-    interactive: false
+    include_p_req_kw: true                # Include filtered P_req in obs
+    include_last_action: true             # Include last [fc_frac, batt_cmd]
+    include_noise_channels: 3             # Extra nuisance channels count
+    normalize_to_unit_box: true           # Normalize obs to [-1,1]
+    p_req_max_kw: 2000.0                  # P_req normalization scale
+    soc_noise_std: 0.02                   # SOC observation noise std
+    tank_noise_std: 0.02                  # Tank observation noise std
+    nuisance_noise_std: 0.1               # Nuisance channels noise std
+  renderer:  # UI/renderer defaults (test harness forces enabled)
+    enabled: true                         # Enable rendering
+    mode: human                           # Matplotlib/human mode
+    render_every: 5                       # Render periodicity (steps)
+    rolling_window_s: 180                 # Time window for plots
+    dpi: 110                              # Figure DPI
+    figsize: [16, 9]                      # Figure size (inches)
+    show_hidden_debug: false              # Hide internal debug overlays
+    draw_schedule: true                   # Draw station schedule overlays
+    write_video: false                    # If true, save MP4 to video_path
+    video_path: "runs/env0_episode.mp4"   # MP4 path if enabled
+    write_png_every: 0                    # Save PNG every N steps (0=off)
+    interactive: false                    # Non-interactive backend
     colors:
       demand: "#000000"
       fc: "#1f77b4"
@@ -250,14 +250,14 @@ scenario:
       unmet: "#d62728"
       soc_band: "#e5e5e5"
   logging:  # Optional metrics captured by env/test harness
-    log_terms:
+    log_terms:                           # Reward components to aggregate
       - reward_total
       - cost_h2
       - cost_grid
       - penalty_unmet
       - penalty_delay
       - penalty_smooth
-    trace_signals:
+    trace_signals:                       # Signals traced each step
       - speed_mps
       - soc
       - tank_level_norm
@@ -265,7 +265,7 @@ scenario:
       - p_fc_kw
       - p_batt_kw
       - p_unmet_kw
-    kpi_aggregates:
+    kpi_aggregates:                      # Episode KPI summaries
       - euro_per_km_proxy
       - kg_h2_per_100km
       - kwh_charge_per_100km
@@ -274,13 +274,13 @@ scenario:
       - batt_energy_throughput_kwh
       - constraint_violations
 
-policy:
-  default: scenario  # Policy to use when CLI asks for --policy auto
-  baseline: {}
+policy:  # EMS selection and per-policy tuning
+  default: scenario                 # Policy to use when CLI asks for --policy auto
+  baseline: {}                      # Baseline load-following policy
   balanced:
-    target_soc: 0.80
-    charge_boost_kw: 60.0
-  scenario: {}       # Scenario-aware EMS tuning overrides
+    target_soc: 0.80               # SOC target for balancing strategy
+    charge_boost_kw: 60.0          # Extra charge power when below target
+  scenario: {}                     # Scenario-aware EMS tuning overrides
   mpc:
-    horizon_s: 45
-    n_grid: 8
+    horizon_s: 45                  # MPC horizon (seconds)
+    n_grid: 8                      # Discretization/grid for MPC search
